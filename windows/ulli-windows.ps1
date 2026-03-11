@@ -1262,8 +1262,34 @@ function Show-DiskPlan {
                     return
                 }
             } elseif ($strat -eq "other_drive_shrink") {
-                # Already validated
+                # ── power warning dialog ────────────────────────────
+                $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
+                    "Keep your computer plugged in!`n`n" +
+                    "A partition resize is about to begin. Power loss during this process " +
+                    "could corrupt your partition table.`n`n" +
+                    "Make sure your computer is connected to AC power before continuing.",
+                    "Power Requirement Warning",
+                    [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
+                    return
+                }
             } elseif ($strat -eq "wipe_disk") {
+                # ── power warning dialog ─────────────────────────────────
+                $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
+                    "Keep your computer plugged in!`n`n" +
+                    "A partition resize is about to begin. Power loss during this process " +
+                    "could corrupt your partition table.`n`n" +
+                    "Make sure your computer is connected to AC power before continuing.",
+                    "Power Requirement Warning",
+                    [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                )
+                if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
+                    return
+                }
+                
                 $wipeConfirm = [System.Windows.Forms.MessageBox]::Show(
                     "WARNING: You are about to ERASE ALL DATA on Disk $($selDisk.Number)!`n`n" +
                     "This will:`n" +
@@ -1688,6 +1714,20 @@ function Start-Installation {
 
         # ── Wipe-disk strategy (secondary drives only) ──────────────────────
         if ($selectedStrategy -eq "wipe_disk") {
+            # ── power warning dialog ─────────────────────────────────
+            $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
+                "Keep your computer plugged in!`n`n" +
+                "A partition resize is about to begin. Power loss during this process " +
+                "could corrupt your partition table.`n`n" +
+                "Make sure your computer is connected to AC power before continuing.",
+                "Power Requirement Warning",
+                [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
+                return
+            }
+
             Log-Message ""
             Log-Message "== Strategy: wipe & reformat entire disk =="
             Log-Message "Target disk: Disk $targetDiskNumber"
@@ -1795,6 +1835,20 @@ exit
         }
         # ── Shrink/free-space strategies ──────────────────────────────────────
         elseif ($selectedStrategy -eq "other_drive_shrink") {
+            # ── power warning dialog ────────────────────────────
+            $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
+                "Keep your computer plugged in!`n`n" +
+                "A partition resize is about to begin. Power loss during this process " +
+                "could corrupt your partition table.`n`n" +
+                "Make sure your computer is connected to AC power before continuing.",
+                "Power Requirement Warning",
+                [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
+                return
+            }
+
             Set-Status "Shrinking ${otherDriveShrinkLetter}: partition on Disk $targetDiskNumber..."
             Log-Message "Shrinking ${otherDriveShrinkLetter}: partition by $otherDriveShrinkAmountGB GB..."
             Log-Message "This will create space for Linux: $linuxSizeGB GB and boot partition: $($script:MinPartitionSizeGB) GB..."
@@ -1805,6 +1859,20 @@ exit
 
             Start-Sleep -Seconds 5
         } elseif ($selectedStrategy -ne "use_free_all" -and -not $isOtherDrive) {
+            # ── power warning dialog ────────────────────────────
+            $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
+                "Keep your computer plugged in!`n`n" +
+                "A partition resize is about to begin. Power loss during this process " +
+                "could corrupt your partition table.`n`n" +
+                "Make sure your computer is connected to AC power before continuing.",
+                "Power Requirement Warning",
+                [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
+                return
+            }
+
             $shrinkAmountGB = if ($selectedStrategy -eq "use_free_boot") { $linuxSizeGB } else { $totalNeededGB }
 
             Set-Status "Shrinking C: partition..."
