@@ -336,9 +336,22 @@ function Set-Status {
 }
 
 function Get-SelectedDistro {
-    foreach ($distroId in $script:DistroRadios.Keys) {
-        if ($script:DistroRadios[$distroId].Checked) {
-            return $script:Distros[$distroId]
+    if ($customRadio.Checked) {
+        $isoSource = if ($script:CustomIsoPath) { $script:CustomIsoPath } else { $script:IsoPath }
+        if (-not $isoSource) {
+            return $null
+        }
+        return @{
+            Name        = [System.IO.Path]::GetFileNameWithoutExtension($isoSource)
+            IsoFilename = [System.IO.Path]::GetFileName($isoSource)
+            Custom      = $true
+        }
+    }
+    else {
+        foreach ($distroId in $script:DistroRadios.Keys) {
+            if ($script:DistroRadios[$distroId].Checked) {
+                return $script:Distros[$distroId]
+            }
         }
     }
     return $script:Distros["mint"]
@@ -935,15 +948,24 @@ function Show-DiskPlan {
             $afterLines = @()
             $partitions = Get-Partition -DiskNumber $selDiskNum | Sort-Object Offset
 
+            # Always resolve the selected distro first
+            $distro = Get-SelectedDistro
+            $distroName = if ($customRadio.Checked -and $script:CustomIsoPath) {
+                [System.IO.Path]::GetFileNameWithoutExtension($script:CustomIsoPath)
+            } elseif ($distro -and $distro.Name) {
+                $distro.Name
+            } else {
+                $DistroName
+            }
             switch ($strategy) {
                 "shrink_all" {
                     $newCSizeGB = [math]::Round($cSizeGB - $totalNeededGB, 2)
                     $changeLines += "  1. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$totalNeededGB GB)"
-                    $changeLines += "  2. Create 7 GB FAT32 boot partition (LINUX_LIVE) with $DistroName files"
+                    $changeLines += "  2. Create 7 GB FAT32 boot partition (LINUX_LIVE) with $distroName files"
                     $changeLines += "  3. Leave $LinuxSizeGB GB unallocated for Linux installation"
-                    $changeLines += "  4. Configure UEFI boot entry for $DistroName"
+                    $changeLines += "  4. Configure UEFI boot entry for $distroName"
 
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
+                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
                         -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB `
                         -ShrinkLetter 'C' -NewShrinkSizeGB $newCSizeGB
                 }
@@ -951,10 +973,10 @@ function Show-DiskPlan {
                     $changeLines += "  1. C: partition is NOT modified (stays at $cSizeGB GB)"
                     $changeLines += "  2. Create 7 GB FAT32 boot partition (LINUX_LIVE) in existing free space"
                     $changeLines += "  3. Remaining ~$([math]::Round($usableFreeGB - $bootPartSizeGB, 1)) GB stays unallocated for Linux"
-                    $changeLines += "  4. Configure UEFI boot entry for $DistroName"
+                    $changeLines += "  4. Configure UEFI boot entry for $distroName"
 
                     $remainFreeGB = [math]::Round($usableFreeGB - $bootPartSizeGB, 1)
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
+                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
                         -BootPartSizeGB $bootPartSizeGB -ShowUnchanged -AppendLinuxAndBoot `
                         -RemainingFreeGB $remainFreeGB
                 }
@@ -963,12 +985,12 @@ function Show-DiskPlan {
                     $changeLines += "  1. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$LinuxSizeGB GB)"
                     $changeLines += "  2. Create 7 GB FAT32 boot partition (LINUX_LIVE) in existing free space"
                     $changeLines += "  3. Leave $LinuxSizeGB GB (from C: shrink) unallocated for Linux"
-                    $changeLines += "  4. Configure UEFI boot entry for $DistroName"
+                    $changeLines += "  4. Configure UEFI boot entry for $distroName"
 
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
+                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
                         -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB `
                         -ShrinkLetter 'C' -NewShrinkSizeGB $newCSizeGB -ShrinkLinuxOnly
-                    $afterLines += "  LINUX_LIVE (FAT32)     $bootPartSizeGB GB  <-- $DistroName live boot"
+                    $afterLines += "  LINUX_LIVE (FAT32)     $bootPartSizeGB GB  <-- $distroName live boot"
                 }
             }
 
