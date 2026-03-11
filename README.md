@@ -1,6 +1,7 @@
 # ULLI:    USB-less Linux Installer
 
 **Donations/tips:** [https://ko-fi.com/rltvty](https://ko-fi.com/rltvty)
+**Bitcoin donations:** bc1qwgwq2y083mvmhaezwky7mknnnqq567hmrpt47r
 
 **Website:** [https://rltvty.net/installlinux.html](https://rltvty.net/installlinux.html)
 
