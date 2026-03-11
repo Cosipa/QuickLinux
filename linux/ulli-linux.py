@@ -15,12 +15,30 @@ Requirements:
                    grub-common grub2-common
 """
 
+import os, sys
+
+# Suppress dconf/ibus/proxy warnings when running as root (must be set before GTK import)
+_is_root = os.geteuid() == 0
+if _is_root:
+    os.environ["GSETTINGS_BACKEND"] = "memory"
+    os.environ["GTK_IM_MODULE"] = ""
+    os.environ["NO_AT_BRIDGE"] = "1"
+    # Redirect fd 2 to /dev/null — C libraries (GDBus, ibus) write warnings
+    # directly to the file descriptor, bypassing Python's sys.stderr.
+    # Python's own stderr is preserved for our code via sys.stderr.
+    _saved_stderr_fd = os.dup(2)
+    _devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(_devnull, 2)
+    os.close(_devnull)
+    # Rewire Python's sys.stderr to the saved real fd so print(..., file=sys.stderr) still works
+    sys.stderr = os.fdopen(_saved_stderr_fd, "w", closefd=False)
+
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 from gi.repository import Gtk, Gdk, GLib, Pango, Vte
 
-import os, sys, subprocess, threading, hashlib, shutil, json, time, signal, re
+import subprocess, threading, hashlib, shutil, json, time, signal, re
 import urllib.request, urllib.error
 from pathlib import Path
 from datetime import datetime
@@ -674,6 +692,9 @@ class InstallerWindow(Gtk.ApplicationWindow):
             action=Gtk.FileChooserAction.OPEN)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
                         Gtk.STOCK_OPEN,   Gtk.ResponseType.OK)
+        # When running as root, default to the real user's home so files are visible
+        user_home = os.environ.get("HOME") or Path.home()
+        dlg.set_current_folder(str(user_home))
         f = Gtk.FileFilter(); f.set_name("ISO files"); f.add_pattern("*.iso")
         dlg.add_filter(f)
         if dlg.run() == Gtk.ResponseType.OK:
@@ -1374,10 +1395,14 @@ class InstallerWindow(Gtk.ApplicationWindow):
 
         self.log(f"Root device : {device}")
         self.log(f"Filesystem  : {fstype}")
-        self.log(f"Distro      : {distro['label']}")
-
-        # ── 1b. Show disk plan – user must approve ─────────────────────────
-        distro_label = distro["label"].split("(")[0].strip()
+        if custom_mode:
+            iso_basename = os.path.basename(self.custom_iso_path) if self.custom_iso_path else "unknown"
+            self.log(f"Distro      : Custom ISO – {iso_basename}")
+            distro_label = os.path.splitext(iso_basename)[0]
+        else:
+            self.log(f"Distro      : {distro['label']}")
+            distro_label = distro["label"].split("(")[0].strip()
+        self._distro_label = distro_label
         plan_result = [None]
         plan_event = threading.Event()
 
@@ -1825,7 +1850,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         if not self._format_and_populate_boot(boot_part_dev, iso_path, distro, distro_key):
             return False
 
-        self._finalize_strategy(boot_part_dev, linux_part_dev, distro["label"])
+        self._finalize_strategy(boot_part_dev, linux_part_dev, self._distro_label)
         return True
 
     # ── use-free-space strategy (root or other disk) ─────────────────────────
@@ -1868,7 +1893,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         if not self._format_and_populate_boot(boot_dev, iso_path, distro, distro_key):
             return False
 
-        self._finalize_strategy(boot_dev, linux_dev, distro["label"])
+        self._finalize_strategy(boot_dev, linux_dev, self._distro_label)
         return True
 
     # ── filesystem shrink helpers ───────────────────────────────────────────
@@ -2159,7 +2184,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         if not self._format_and_populate_boot(boot_dev, iso_path, distro, distro_key):
             return False
 
-        self._finalize_strategy(boot_dev, linux_dev, distro["label"])
+        self._finalize_strategy(boot_dev, linux_dev, self._distro_label)
         return True
 
     # ── wipe-disk strategy (secondary drives only) ─────────────────────────
@@ -2449,7 +2474,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self._write_boot_instructions(
             boot_dev=boot_dev,
             linux_dev=f"{disk_path} (remaining unallocated space)",
-            distro_label=distro["label"],
+            distro_label=self._distro_label,
         )
         return True
 
@@ -2788,10 +2813,15 @@ def ensure_root():
     # the display variables needed for the GUI to work.
     env_vars = []
     for var in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
-                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                "HOME", "XDG_CONFIG_HOME", "DCONF_PROFILE"):
         val = os.environ.get(var)
         if val:
             env_vars.append(f"{var}={val}")
+    # Suppress GTK warnings about dconf/ibus/a11y when running as root
+    env_vars.append("GSETTINGS_BACKEND=memory")
+    env_vars.append("GTK_IM_MODULE=none")
+    env_vars.append("NO_AT_BRIDGE=1")
 
     cmd = ["pkexec", "env"] + env_vars + [sys.executable] + sys.argv
 
@@ -2800,8 +2830,12 @@ def ensure_root():
     except Exception as e:
         # If pkexec is missing or the user cancels, fall back to sudo
         print(f"pkexec failed ({e}), trying sudo…")
-        cmd_sudo = ["sudo", "--preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,"
-                    "XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS",
+        cmd_sudo = ["sudo",
+                    "GSETTINGS_BACKEND=memory", "GTK_IM_MODULE=none",
+                    "NO_AT_BRIDGE=1",
+                    "--preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,"
+                    "XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,"
+                    "HOME,XDG_CONFIG_HOME,DCONF_PROFILE",
                     sys.executable] + sys.argv
         try:
             os.execvp("sudo", cmd_sudo)
