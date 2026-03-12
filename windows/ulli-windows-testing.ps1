@@ -682,7 +682,7 @@ function Show-DiskPlan {
     } else {
         $isoSizeGB = 6
     }
-    $bootPartSizeGB = [math]::Ceiling($isoSizeGB) + 1
+    $bootPartSizeGB = [math]::Round($isoSizeGB + 1, 1)
 
     # ---- Enumerate all suitable disks ----
     $allDisks = Get-Disk | Where-Object {
@@ -1755,11 +1755,12 @@ function Start-Installation {
             }
         }
 
-        # Recompute boot partition size from actual ISO file
-        $actualIsoGB = (Get-Item $script:IsoPath).Length / 1GB
-        $bootPartSizeGB = [math]::Ceiling($actualIsoGB) + 1
+        # Recompute boot partition size from actual ISO file: ISO size + 1 GB
+        $isoBytes = (Get-Item $script:IsoPath).Length
+        $bootPartSizeBytes = $isoBytes + 1GB
+        $bootPartSizeGB = [math]::Round($bootPartSizeBytes / 1GB, 1)
         $totalNeededGB = $linuxSizeGB + $bootPartSizeGB
-        Log-Message "ISO scanned: $([math]::Round($actualIsoGB, 2)) GB -> boot partition: $bootPartSizeGB GB"
+        Log-Message "ISO scanned: $([math]::Round($isoBytes / 1GB, 2)) GB -> boot partition: $bootPartSizeGB GB"
 
         # ── Wipe-disk strategy (secondary drives only) ──────────────────────
         if ($selectedStrategy -eq "wipe_disk") {
@@ -1836,7 +1837,7 @@ exit
             Set-Status "Creating boot partition..."
             try {
                 $bootPartition = New-Partition -DiskNumber $targetDiskNumber `
-                    -Size ([int64]($bootPartSizeGB * 1GB)) `
+                    -Size ([int64]($bootPartSizeBytes)) `
                     -AssignDriveLetter `
                     -ErrorAction Stop
 
@@ -1998,7 +1999,7 @@ exit
                 }
             }
 
-            $bootPartitionSize = [int64]($bootPartSizeGB * 1GB)
+            $bootPartitionSize = [int64]($bootPartSizeBytes)
             $alignmentSize = [int64](1MB)
             $bufferSize = [int64](16MB)
             $minGapRequired = $bootPartitionSize + $bufferSize + $alignmentSize
@@ -2045,9 +2046,9 @@ exit
 
             Log-Message "Creating boot partition..."
 
-            $bootPartitionSize = [int64]($bootPartSizeGB * 1GB)
+            $bootPartitionSize = [int64]($bootPartSizeBytes)
             $offsetMB = [int64]([Math]::Floor($bootPartitionOffset / 1MB))
-            $sizeMB = [int64]($bootPartSizeGB * 1024)
+            $sizeMB = [int64]([Math]::Ceiling($bootPartSizeBytes / 1MB))
 
             if ($offsetMB -lt 0 -or $bootPartitionOffset -gt $disk.Size) {
                 throw "Invalid offset calculated: $offsetMB MB (from $bootPartitionOffset bytes)"
@@ -2131,7 +2132,7 @@ exit
                     $gapSizeGB = [math]::Round($gapSize / 1GB, 2)
                     Log-Message "Gap between C: and Recovery: $gapSizeGB GB"
 
-                    $fillerSize = [int64]($gapSize - ($bootPartSizeGB * 1GB) - (1GB))
+                    $fillerSize = [int64]($gapSize - ($bootPartSizeBytes) - (1GB))
                     $fillerSizeGB = [math]::Round($fillerSize / 1GB, 2)
 
                     if ($fillerSize -gt 0) {
@@ -2145,7 +2146,7 @@ exit
                             Log-Message "Filler partition created. Now creating boot partition..."
 
                             $bootPartition = New-Partition -DiskNumber $targetDiskNumber `
-                                -Size ($bootPartSizeGB * 1GB) `
+                                -Size ($bootPartSizeBytes) `
                                 -AssignDriveLetter `
                                 -ErrorAction Stop
 
@@ -2177,7 +2178,7 @@ exit
                 Log-Message "All offset methods failed. Creating partition without specific offset..."
                 try {
                     $newPartition = New-Partition -DiskNumber $targetDiskNumber `
-                        -Size ($bootPartSizeGB * 1GB) `
+                        -Size ($bootPartSizeBytes) `
                         -AssignDriveLetter `
                         -ErrorAction Stop
 
@@ -2193,7 +2194,7 @@ exit
             if ($partitionCreated -and -not $driveLetter) {
                 Start-Sleep -Seconds 3
 
-                $targetSize = [int64]($bootPartSizeGB * 1GB)
+                $targetSize = [int64]($bootPartSizeBytes)
                 $tolerance = [int64](100MB)
 
                 $newPartitions = Get-Partition -DiskNumber $targetDiskNumber |
