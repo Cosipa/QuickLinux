@@ -2798,11 +2798,16 @@ as free space and offer "Install alongside existing Linux".
 def check_deps():
     missing = []
     for tool in ["parted", "rsync", "mkfs.fat",
-                 "btrfs", "blkid", "update-grub",
+                 "btrfs", "blkid",
                  "sfdisk", "resize2fs", "e2fsck", "lsblk",
                  "ntfsresize"]:
         if shutil.which(tool) is None:
             missing.append(tool)
+    # update-grub is Debian/Ubuntu-only; on other distros grub2-mkconfig or
+    # grub-mkconfig is used instead. Flag missing only if none are present.
+    grub_tools = ["update-grub", "grub2-mkconfig", "grub-mkconfig"]
+    if not any(shutil.which(t) for t in grub_tools):
+        missing.append("grub tool (one of: update-grub / grub2-mkconfig / grub-mkconfig)")
     return missing
 
 
@@ -2859,9 +2864,15 @@ if __name__ == "__main__":
         if m:
             print("Missing tools:", ", ".join(m))
             print("Install with:")
-            print("  sudo apt install " +
-                  "parted rsync dosfstools btrfs-progs grub-common "
+            print("  Debian/Ubuntu:  sudo apt install " +
+                  "parted rsync dosfstools btrfs-progs grub-common " +
                   "e2fsprogs fdisk util-linux ntfs-3g")
+            print("  Fedora/RHEL:    sudo dnf install " +
+                  "parted rsync dosfstools btrfs-progs grub2-tools " +
+                  "e2fsprogs util-linux ntfsprogs efibootmgr")
+            print("  Arch/CachyOS:   sudo pacman -S " +
+                  "parted rsync dosfstools btrfs-progs grub " +
+                  "e2fsprogs util-linux ntfs-3g efibootmgr")
         else:
             print("All dependencies satisfied.")
         sys.exit(0)
