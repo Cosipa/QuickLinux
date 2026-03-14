@@ -21,12 +21,63 @@ import os, sys
 # When invoked with --root-helper, run as a JSON-RPC subprocess that executes
 # privileged commands on behalf of the unprivileged GUI process.
 if "--root-helper" in sys.argv:
-    import json as _json, subprocess as _sp
+    import json as _json, subprocess as _sp, os as _os
+
+    # SECURITY FIX: Whitelist of allowed commands to prevent privilege escalation
+    ALLOWED_COMMANDS = {
+        "parted", "sfdisk", "partprobe", "btrfs", "mkfs.fat", 
+        "rsync", "mount", "umount", "findmnt", "df", "blkid",
+        "lsblk", "efibootmgr", "grub-mkconfig", "update-grub", "grub2-mkconfig",
+        "dd", "wipefs", "sgdisk", "udevadm", "sync", "ntfsresize",
+        "resize2fs", "e2fsck", "dumpe2fs", "systemctl", "7z", 
+        "dmsetup", "swapon", "swapoff", "fuser", "env"
+    }
+
+    # SECURITY FIX: Allowed path prefixes for file operations
+    ALLOWED_PREFIXES = (
+        "/mnt/", "/run/udev/", "/boot/", "/sys/", "/dev/", "/proc/"
+    )
+
+    def _validate_request(req):
+        """Validate every JSON-RPC request before execution."""
+        _t = req.get("type")
+        
+        if _t not in ("run", "mkdir", "read", "write", "unlink", "exists"):
+            return False, f"Unknown request type: {_t}"
+        
+        if _t == "run":
+            cmd = req.get("cmd", [])
+            if not cmd or cmd[0] not in ALLOWED_COMMANDS:
+                return False, f"Command '{cmd[0] if cmd else 'empty'}' not allowed"
+            
+            # Block basic dangerous shell patterns
+            cmd_str = " ".join(cmd)
+            if any(p in cmd_str for p in (">>", "<<", "|", "chmod 777", "/etc/shadow", "/etc/sudoers")):
+                return False, "Dangerous pattern detected in command"
+        
+        elif _t in ("mkdir", "read", "write", "unlink", "exists"):
+            path = req.get("path", "")
+            real_path = _os.path.realpath(path) # Resolve ../ to prevent directory traversal
+            
+            if not real_path.startswith(ALLOWED_PREFIXES):
+                return False, f"Path '{path}' not in allowed prefixes"
+        
+        return True, "OK"
+
     for _line in sys.stdin:
         try:
             _req = _json.loads(_line)
         except _json.JSONDecodeError:
             continue
+            
+        # Validate request before executing anything
+        _valid, _msg = _validate_request(_req)
+        if not _valid:
+            _resp = {"rc": 1, "err": f"Security validation failed: {_msg}"}
+            sys.stdout.write(_json.dumps(_resp) + "\n")
+            sys.stdout.flush()
+            continue
+            
         _t = _req.get("type")
         try:
             if _t == "run":
@@ -35,7 +86,7 @@ if "--root-helper" in sys.argv:
                 _resp = {"rc": _r.returncode,
                          "out": _r.stdout or "", "err": _r.stderr or ""}
             elif _t == "mkdir":
-                os.makedirs(_req["path"], exist_ok=True)
+                _os.makedirs(_req["path"], exist_ok=True)
                 _resp = {"rc": 0}
             elif _t == "read":
                 with open(_req["path"], "r", errors="replace") as _f:
@@ -45,14 +96,13 @@ if "--root-helper" in sys.argv:
                     _f.write(_req["content"])
                 _resp = {"rc": 0}
             elif _t == "unlink":
-                os.unlink(_req["path"])
+                _os.unlink(_req["path"])
                 _resp = {"rc": 0}
             elif _t == "exists":
-                _resp = {"rc": 0, "exists": os.path.exists(_req["path"])}
-            else:
-                _resp = {"rc": 1, "err": f"unknown request type: {_t}"}
+                _resp = {"rc": 0, "exists": _os.path.exists(_req["path"])}
         except Exception as _e:
             _resp = {"rc": 1, "err": str(_e)}
+            
         sys.stdout.write(_json.dumps(_resp) + "\n")
         sys.stdout.flush()
     sys.exit(0)
