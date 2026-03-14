@@ -1,7 +1,7 @@
 # Linux Installer for Windows 11 UEFI Systems - Enhanced Edition with Auto-Restart
 # PowerShell GUI Version - Fixed unit conversions for proper partition placement
 # Run as Administrator: powershell -ExecutionPolicy Bypass -File linux_installer.ps1
-# Distributions: Linux Mint 22.3 "Zena" (Cinnamon Edition), Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, Fedora 43 KDE
+# Distributions: Linux Mint 22.3 "Zena" (Cinnamon Edition), CachyOS Desktop, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, Fedora 43 KDE
 
 #Requires -Version 5.1
 
@@ -49,6 +49,21 @@ $script:Distros = [ordered]@{
         Keyword       = "Mint"
         ValidationFile = "casper\vmlinuz"
         IsHybrid      = $false
+    }
+    cachyos = @{
+        Name          = "CachyOS Desktop"
+        RadioLabel    = "CachyOS Desktop (approx. 2.6 GB)"
+        ExpectedSize  = "approximately 2.6 GB"
+        Mirrors       = @(
+            "https://cdn77.cachyos.org/ISO/desktop/260308/cachyos-desktop-linux-260308.iso"
+        )
+        Checksum      = "69f1ffbded158d4d95e6567e994b1813d0d040d323742aef9f489a0b71ad1d29"
+        IsoFilename   = "cachyos-desktop-linux-260308.iso"
+        DownloadPage  = "https://cachyos.org/download/"
+        DownloadMsg   = "Please download CachyOS Desktop and save it as:"
+        Keyword       = "CachyOS"
+        ValidationFile = "arch\boot\x86_64\vmlinuz-linux-cachyos"
+        IsHybrid      = $true
     }
     ubuntu = @{
         Name          = "Ubuntu 24.04.4 LTS"
@@ -197,44 +212,35 @@ $isoGroup = New-Object System.Windows.Forms.GroupBox
 $isoGroup.Text = "Distribution"
 $isoGroup.Font = $normalFont
 $isoGroup.Location = New-Object System.Drawing.Point(10, 104)
-$isoGroup.Size = New-Object System.Drawing.Size(680, 174)
+$isoGroup.Size = New-Object System.Drawing.Size(680, 100)
 $form.Controls.Add($isoGroup)
 
-# Panel to isolate distro radio buttons
-$distroPanel = New-Object System.Windows.Forms.Panel
-$distroPanel.Location = New-Object System.Drawing.Point(10, 15)
-$distroPanel.Size = New-Object System.Drawing.Size(650, 122)
-$isoGroup.Controls.Add($distroPanel)
-
-# ─── Generate distro radio buttons from data table ────────────────────────────
-$script:DistroRadios = [ordered]@{}
-$radioY = 0
-$firstRadio = $true
-foreach ($distroId in $script:Distros.Keys) {
-    $distro = $script:Distros[$distroId]
-    $radio = New-Object System.Windows.Forms.RadioButton
-    $radio.Text = $distro.RadioLabel
-    $radio.Font = $boldFont
-    $radio.Location = New-Object System.Drawing.Point(0, $radioY)
-    $radio.Size = New-Object System.Drawing.Size(640, 20)
-    if ($firstRadio) { $radio.Checked = $true; $firstRadio = $false }
-    $distroPanel.Controls.Add($radio)
-    $script:DistroRadios[$distroId] = $radio
-    $radioY += 24
+# ─── Distro dropdown list ─────────────────────────────────────────────────────
+$script:DistroKeys = @($script:Distros.Keys)
+$distroCombo = New-Object System.Windows.Forms.ComboBox
+$distroCombo.Font = $boldFont
+$distroCombo.Location = New-Object System.Drawing.Point(10, 22)
+$distroCombo.Size = New-Object System.Drawing.Size(650, 24)
+$distroCombo.ForeColor = [System.Drawing.Color]::Black
+$distroCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+foreach ($distroId in $script:DistroKeys) {
+    $distroCombo.Items.Add($script:Distros[$distroId].RadioLabel) | Out-Null
 }
+$distroCombo.SelectedIndex = 0
+$isoGroup.Controls.Add($distroCombo)
 
 # Custom ISO checkbox
 $customRadio = New-Object System.Windows.Forms.CheckBox
 $customRadio.Text = "Use existing ISO file:"
 $customRadio.Font = $normalFont
-$customRadio.Location = New-Object System.Drawing.Point(10, 142)
+$customRadio.Location = New-Object System.Drawing.Point(10, 56)
 $customRadio.Size = New-Object System.Drawing.Size(160, 20)
 $isoGroup.Controls.Add($customRadio)
 
 # Custom ISO path textbox
 $customIsoTextbox = New-Object System.Windows.Forms.TextBox
 $customIsoTextbox.Font = $normalFont
-$customIsoTextbox.Location = New-Object System.Drawing.Point(172, 140)
+$customIsoTextbox.Location = New-Object System.Drawing.Point(172, 54)
 $customIsoTextbox.Size = New-Object System.Drawing.Size(388, 24)
 $customIsoTextbox.ReadOnly = $true
 $customIsoTextbox.Enabled = $false
@@ -244,7 +250,7 @@ $isoGroup.Controls.Add($customIsoTextbox)
 $browseButton = New-Object System.Windows.Forms.Button
 $browseButton.Text = "Browse..."
 $browseButton.Font = $normalFont
-$browseButton.Location = New-Object System.Drawing.Point(568, 139)
+$browseButton.Location = New-Object System.Drawing.Point(568, 53)
 $browseButton.Size = New-Object System.Drawing.Size(100, 26)
 $browseButton.Enabled = $false
 $isoGroup.Controls.Add($browseButton)
@@ -253,7 +259,7 @@ $isoGroup.Controls.Add($browseButton)
 $diskGroup = New-Object System.Windows.Forms.GroupBox
 $diskGroup.Text = "Disk Information"
 $diskGroup.Font = $normalFont
-$diskGroup.Location = New-Object System.Drawing.Point(10, 288)
+$diskGroup.Location = New-Object System.Drawing.Point(10, 214)
 $diskGroup.Size = New-Object System.Drawing.Size(680, 130)
 $form.Controls.Add($diskGroup)
 
@@ -268,7 +274,7 @@ $diskGroup.Controls.Add($diskInfoText)
 $logGroup = New-Object System.Windows.Forms.GroupBox
 $logGroup.Text = "Installation Log"
 $logGroup.Font = $normalFont
-$logGroup.Location = New-Object System.Drawing.Point(10, 427)
+$logGroup.Location = New-Object System.Drawing.Point(10, 353)
 $logGroup.Size = New-Object System.Drawing.Size(680, 90)
 $form.Controls.Add($logGroup)
 
@@ -286,7 +292,7 @@ $logGroup.Controls.Add($logBox)
 $deleteIsoCheck = New-Object System.Windows.Forms.CheckBox
 $deleteIsoCheck.Text = "Delete ISO file after installation"
 $deleteIsoCheck.Font = $normalFont
-$deleteIsoCheck.Location = New-Object System.Drawing.Point(10, 527)
+$deleteIsoCheck.Location = New-Object System.Drawing.Point(10, 453)
 $deleteIsoCheck.Size = New-Object System.Drawing.Size(300, 25)
 $form.Controls.Add($deleteIsoCheck)
 
@@ -294,7 +300,7 @@ $form.Controls.Add($deleteIsoCheck)
 $autoRestartCheck = New-Object System.Windows.Forms.CheckBox
 $autoRestartCheck.Text = "Automatically restart and configure UEFI boot"
 $autoRestartCheck.Font = $normalFont
-$autoRestartCheck.Location = New-Object System.Drawing.Point(10, 552)
+$autoRestartCheck.Location = New-Object System.Drawing.Point(10, 478)
 $autoRestartCheck.Size = New-Object System.Drawing.Size(300, 25)
 $autoRestartCheck.Checked = $true
 $form.Controls.Add($autoRestartCheck)
@@ -303,7 +309,7 @@ $form.Controls.Add($autoRestartCheck)
 $startButton = New-Object System.Windows.Forms.Button
 $startButton.Text = "Start Installation"
 $startButton.Font = $boldFont
-$startButton.Location = New-Object System.Drawing.Point(390, 532)
+$startButton.Location = New-Object System.Drawing.Point(390, 510)
 $startButton.Size = New-Object System.Drawing.Size(140, 35)
 $startButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
 $startButton.ForeColor = [System.Drawing.Color]::White
@@ -314,7 +320,7 @@ $form.Controls.Add($startButton)
 $exitButton = New-Object System.Windows.Forms.Button
 $exitButton.Text = "Exit"
 $exitButton.Font = $normalFont
-$exitButton.Location = New-Object System.Drawing.Point(540, 532)
+$exitButton.Location = New-Object System.Drawing.Point(540, 510)
 $exitButton.Size = New-Object System.Drawing.Size(140, 35)
 $form.Controls.Add($exitButton)
 
@@ -361,10 +367,9 @@ function Get-SelectedDistro {
         }
     }
     else {
-        foreach ($distroId in $script:DistroRadios.Keys) {
-            if ($script:DistroRadios[$distroId].Checked) {
-                return $script:Distros[$distroId]
-            }
+        $idx = $distroCombo.SelectedIndex
+        if ($idx -ge 0 -and $idx -lt $script:DistroKeys.Count) {
+            return $script:Distros[$script:DistroKeys[$idx]]
         }
     }
     return $script:Distros["mint"]
@@ -533,9 +538,7 @@ function Set-UILocked {
     $autoRestartCheck.Enabled = $enabled
     $customRadio.Enabled = $enabled
     $browseButton.Enabled = $enabled
-    foreach ($radio in $script:DistroRadios.Values) {
-        $radio.Enabled = $enabled
-    }
+    $distroCombo.Enabled = $enabled
 }
 
 function Update-DiskInfo {
@@ -2261,7 +2264,7 @@ exit
                 return
             }
 
-            $mountResult = Mount-DiskImage -ImagePath $script:IsoPath -PassThru -ErrorAction Stop
+            $mountResult = Mount-DiskImage -ImagePath $script:IsoPath -StorageType ISO -PassThru -ErrorAction Stop
             Start-Sleep -Seconds 2
 
             $isoVolume = Get-Volume -DiskImage $mountResult -ErrorAction Stop | Select-Object -First 1
@@ -2426,6 +2429,79 @@ exit
                 } else {
                     Log-Message "Warning: No LABEL references found to patch. Fedora may not boot correctly." -Error
                     Log-Message "You may need to manually edit EFI\BOOT\grub.cfg and replace the LABEL= value with '$fedoraLabel'" -Error
+                }
+            }
+        }
+
+        # CachyOS/Arch-specific: fix archisolabel in GRUB, syslinux, and loader configs
+        if ($distro.Keyword -eq "CachyOS") {
+            Set-Status "Fixing CachyOS boot labels..."
+            Log-Message "Fixing CachyOS volume label references in boot configs..."
+
+            $cachyLabel = $script:VolumeLabel
+
+            $bootConfigFiles = @()
+            $searchPaths = @(
+                (Join-Path $script:NewDrive "EFI\BOOT\grub.cfg"),
+                (Join-Path $script:NewDrive "boot\grub\grub.cfg"),
+                (Join-Path $script:NewDrive "syslinux\archiso_sys-linux.cfg"),
+                (Join-Path $script:NewDrive "syslinux\archiso_pxe-linux.cfg"),
+                (Join-Path $script:NewDrive "syslinux\archiso_sys.cfg"),
+                (Join-Path $script:NewDrive "syslinux\archiso_pxe.cfg"),
+                (Join-Path $script:NewDrive "syslinux\syslinux.cfg")
+            )
+
+            foreach ($cfgPath in $searchPaths) {
+                if (Test-Path $cfgPath) {
+                    $bootConfigFiles += $cfgPath
+                }
+            }
+
+            # Also check systemd-boot loader entries
+            $loaderDir = Join-Path $script:NewDrive "loader\entries"
+            if (Test-Path $loaderDir) {
+                $loaderConfFiles = Get-ChildItem -Path $loaderDir -Filter "*.conf" -ErrorAction SilentlyContinue
+                foreach ($lf in $loaderConfFiles) {
+                    $bootConfigFiles += $lf.FullName
+                }
+            }
+
+            if ($bootConfigFiles.Count -eq 0) {
+                Log-Message "Warning: No boot config files found to patch" -Error
+            } else {
+                $patchedCount = 0
+                foreach ($cfgFile in $bootConfigFiles) {
+                    try {
+                        $content = Get-Content $cfgFile -Raw -ErrorAction Stop
+                        $originalContent = $content
+
+                        # Patch archisolabel= and archisosearchlabel= (kernel command line)
+                        $content = $content -replace '(archiso(?:search)?label=)([^\s\\]+)', "`$1$cachyLabel"
+
+                        # Patch archisodevice=/dev/disk/by-label/LABEL
+                        $content = $content -replace '(archisodevice=/dev/disk/by-label/)([^\s\\]+)', "`$1$cachyLabel"
+
+                        # Patch GRUB search commands with --label or --fs-label
+                        $content = $content -replace "(search\s+[^\r\n]*?--(?:label|fs-label)\s+)(\S+)", "`$1$cachyLabel"
+
+                        if ($content -ne $originalContent) {
+                            Set-Content -Path $cfgFile -Value $content -Encoding UTF8 -Force
+                            Log-Message "  Patched: $(Split-Path -Leaf $cfgFile)"
+                            $patchedCount++
+                        } else {
+                            Log-Message "  No label references in: $(Split-Path -Leaf $cfgFile)"
+                        }
+                    }
+                    catch {
+                        Log-Message "  Warning: Could not patch $($cfgFile): $_" -Error
+                    }
+                }
+
+                if ($patchedCount -gt 0) {
+                    Log-Message "Patched $patchedCount boot config file(s) with label '$cachyLabel'"
+                } else {
+                    Log-Message "Warning: No archisolabel references found to patch. CachyOS may not boot correctly." -Error
+                    Log-Message "You may need to manually edit the boot config files and replace archisolabel= with '$cachyLabel'" -Error
                 }
             }
         }
@@ -2901,9 +2977,11 @@ $customRadio.Add_CheckedChanged({
     if ($customRadio.Checked) {
         $customIsoTextbox.Enabled = $true
         $browseButton.Enabled = $true
+        $distroCombo.Enabled = $false
     } else {
         $customIsoTextbox.Enabled = $false
         $browseButton.Enabled = $false
+        $distroCombo.Enabled = $true
     }
 })
 
