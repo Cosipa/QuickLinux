@@ -34,7 +34,7 @@ if "--root-helper" in sys.argv:
         "dd", "wipefs", "sgdisk", "udevadm", "sync", "ntfsresize",
         "resize2fs", "e2fsck", "dumpe2fs", "systemctl", "7z",
         "dmsetup", "swapon", "swapoff", "fuser", "env", "chown",
-        "ls", "find", "cp", "rm", "unzip",
+        "ls", "find", "cp", "rm", "unzip", "reboot",
     }
 
     ALLOWED_PREFIXES = (
@@ -1243,13 +1243,15 @@ class InstallerWindow(Gtk.ApplicationWindow):
                     change_lines.append("  1. Root partition is NOT modified")
                     change_lines.append(
                         f"  2. Create {boot_gb_d} GB {boot_fs} boot partition (LINUX_LIVE)")
+                    change_lines.append(
+                        f"  3. Remaining space for Linux installer")
+                    step = 4
                     if refind_mib:
                         change_lines.append(
-                            f"  3. Create {REFIND_MIB} MB FAT32 rEFInd partition")
+                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition (at end of free space)")
+                        step += 1
                     change_lines.append(
-                        f"  {3 + (1 if refind_mib else 0)}. Remaining space for Linux installer")
-                    change_lines.append(
-                        f"  {4 + (1 if refind_mib else 0)}. Configure boot for {distro_label}")
+                        f"  {step}. Configure boot for {distro_label}")
 
                     for p_line in get_disk_layout_text(sel_path):
                         if "[Unallocated]" not in p_line:
@@ -1277,13 +1279,15 @@ class InstallerWindow(Gtk.ApplicationWindow):
                         f"{root_size_gb} GB to {new_size_gb} GB  (−{total_needed_gb} GB)")
                     change_lines.append(
                         f"  2. Create {boot_gb_d} GB {boot_fs} boot partition (LINUX_LIVE)")
+                    change_lines.append(
+                        f"  3. Leave {linux_gb_d} GB for Linux installer")
+                    step = 4
                     if refind_mib:
                         change_lines.append(
-                            f"  3. Create {REFIND_MIB} MB FAT32 rEFInd partition")
+                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition (at end of free space)")
+                        step += 1
                     change_lines.append(
-                        f"  {3 + (1 if refind_mib else 0)}. Leave {linux_gb_d} GB for Linux installer")
-                    change_lines.append(
-                        f"  {4 + (1 if refind_mib else 0)}. Configure boot for {distro_label}")
+                        f"  {step}. Configure boot for {distro_label}")
 
                     parts, _, _ = get_disk_partitions(sel_path)
                     _, root_part_num = self._resolve_disk_and_part(root_dev)
@@ -1296,11 +1300,11 @@ class InstallerWindow(Gtk.ApplicationWindow):
                                 f"  Root ({root_dev})       {new_size_gb} GB  (shrunk)")
                             after_lines.append(
                                 f"  LINUX_LIVE ({boot_fs})    {boot_gb_d} GB  ← {distro_label}")
+                            after_lines.append(
+                                f"  [Unallocated – Linux]  {linux_gb_d} GB  ← for installer")
                             if refind_mib:
                                 after_lines.append(
                                     f"  REFIND (FAT32)        {mib_to_display_gb(REFIND_MIB)} GB  ← rEFInd")
-                            after_lines.append(
-                                f"  [Unallocated – Linux]  {linux_gb_d} GB  ← for installer")
                         else:
                             dev_p = _part_dev_path(sel_path, p["num"])
                             lbl = p["name"] or get_partition_fstype(dev_p) or "Partition"
@@ -1410,24 +1414,24 @@ class InstallerWindow(Gtk.ApplicationWindow):
                     change_lines.append(f"  3. Create 512 MB EFI System Partition (ESP)")
                     change_lines.append(
                         f"  4. Create {boot_gb_d} GB {boot_fs} boot partition (LINUX_LIVE)")
-                    step = 5
+                    change_lines.append(
+                        f"  5. Leave ~{usable_gb} GB unallocated for Linux installer")
+                    step = 6
                     if refind_mib:
                         change_lines.append(
-                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition")
+                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition (at end of disk)")
                         step += 1
                     change_lines.append(
-                        f"  {step}. Leave ~{usable_gb} GB unallocated for Linux installer")
-                    change_lines.append(
-                        f"  {step+1}. Configure boot for {distro_label}")
+                        f"  {step}. Configure boot for {distro_label}")
 
                     after_lines.append(f"  EFI System (ESP)       0.5 GB  ← UEFI boot files")
                     after_lines.append(
                         f"  LINUX_LIVE ({boot_fs})    {boot_gb_d} GB  ← {distro_label}")
+                    after_lines.append(
+                        f"  [Unallocated – Linux]  ~{usable_gb} GB  ← for installer")
                     if refind_mib:
                         after_lines.append(
                             f"  REFIND (FAT32)        {mib_to_display_gb(REFIND_MIB)} GB  ← rEFInd")
-                    after_lines.append(
-                        f"  [Unallocated – Linux]  ~{usable_gb} GB  ← for installer")
 
                 elif using_shrink:
                     best = max(shrinkable, key=lambda s: s["free_gb"])
@@ -1441,15 +1445,15 @@ class InstallerWindow(Gtk.ApplicationWindow):
                         f"{new_size_gb} GB  (−{total_needed_gb} GB)")
                     change_lines.append(
                         f"  3. Create {boot_gb_d} GB {boot_fs} boot partition (LINUX_LIVE)")
-                    step = 4
+                    change_lines.append(
+                        f"  4. Leave {linux_gb_d} GB for Linux installer")
+                    step = 5
                     if refind_mib:
                         change_lines.append(
-                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition")
+                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition (at end of free space)")
                         step += 1
                     change_lines.append(
-                        f"  {step}. Leave {linux_gb_d} GB for Linux installer")
-                    change_lines.append(
-                        f"  {step+1}. Configure boot for {distro_label}")
+                        f"  {step}. Configure boot for {distro_label}")
 
                 elif has_free:
                     plan_state["strategy"] = "other_disk_free"
@@ -1458,13 +1462,15 @@ class InstallerWindow(Gtk.ApplicationWindow):
                     change_lines.append("  1. Root partition is NOT modified (different disk)")
                     change_lines.append(
                         f"  2. Create {boot_gb_d} GB {boot_fs} (LINUX_LIVE) on {sel['name']}")
+                    change_lines.append(
+                        f"  3. Remaining space for installer")
+                    step = 4
                     if refind_mib:
                         change_lines.append(
-                            f"  3. Create {REFIND_MIB} MB FAT32 rEFInd partition")
+                            f"  {step}. Create {REFIND_MIB} MB FAT32 rEFInd partition (at end of free space)")
+                        step += 1
                     change_lines.append(
-                        f"  {3 + (1 if refind_mib else 0)}. Remaining space for installer")
-                    change_lines.append(
-                        f"  {4 + (1 if refind_mib else 0)}. Configure boot for {distro_label}")
+                        f"  {step}. Configure boot for {distro_label}")
                 else:
                     plan_state["strategy"] = "blocked"
                     change_lines.append("  Cannot proceed with this disk.")
@@ -1761,15 +1767,23 @@ class InstallerWindow(Gtk.ApplicationWindow):
         """Create LINUX_LIVE, optionally REFIND, and linux partitions.
         Returns (boot_dev, linux_dev, refind_dev_or_None) or None."""
         use_refind = self._use_refind()
-        if use_refind:
-            refind_start = boot_end
-            refind_end = refind_start + REFIND_MIB
-            linux_start = refind_end + 1
-        else:
-            linux_start = boot_end + 1
-            refind_start = refind_end = 0
+        linux_start = boot_end + 1
+        refind_start = 0
+        refind_end = 0
 
-        self.log(f"Creating partitions: boot {boot_start}–{boot_end} MiB" +
+        if use_refind:
+            if linux_end_str == "100%":
+                _, _, disk_size_mib = get_disk_partitions(disk_path)
+                refind_end = disk_size_mib - 1
+                refind_start = refind_end - REFIND_MIB
+                linux_end_str = f"{refind_start - 1}MiB"
+            else:
+                orig_end = int(float(linux_end_str.replace("MiB", "")))
+                refind_end = orig_end
+                refind_start = refind_end - REFIND_MIB
+                linux_end_str = f"{refind_start - 1}MiB"
+
+        self.log(f"Creating partitions: boot {boot_start}-{boot_end} MiB" +
                  (f", refind {refind_start}–{refind_end} MiB" if use_refind else "") +
                  f", linux {linux_start}–{linux_end_str}")
         self.set_status("Creating partitions…")
@@ -2872,9 +2886,11 @@ class InstallerWindow(Gtk.ApplicationWindow):
             esp_end = esp_start + esp_mib
             boot_start = esp_end
             boot_end = boot_start + boot_mib
+            # rEFInd goes at the END of the disk so free space is contiguous
             if use_refind:
-                refind_start = boot_end
-                refind_end = refind_start + REFIND_MIB
+                _, _, disk_size_mib = get_disk_partitions(disk_path)
+                refind_end = disk_size_mib - 1  # leave 1 MiB for GPT backup
+                refind_start = refind_end - REFIND_MIB
             else:
                 refind_start = refind_end = 0
 
@@ -2902,7 +2918,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
                 self.log(f"Failed to create boot partition: {err}", error=True)
                 return False
 
-            # Create rEFInd partition if enabled
+            # Create rEFInd partition at end of disk if enabled
             if use_refind:
                 code, _, err = run(["parted", "-s", "--", disk_path,
                                     "mkpart", "REFIND", "fat32",
