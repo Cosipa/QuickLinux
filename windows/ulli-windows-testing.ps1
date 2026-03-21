@@ -512,7 +512,7 @@ function New-UefiBootEntry {
     )
     $bootCreated = $false
     try {
-        $copyOutput = bcdedit /copy "{bootmgr}" /d "$DistroName" 2>&1
+        $copyOutput = & bcdedit.exe /copy "{bootmgr}" /d "`"$DistroName`"" 2>&1
         $copyOutputStr = $copyOutput -join " "
 
         if ($copyOutputStr -match '\{[0-9a-fA-F-]+\}') {
@@ -528,7 +528,7 @@ function New-UefiBootEntry {
 
             $r1 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "device", "partition=$DevicePartition" -Wait -PassThru -NoNewWindow
             $r2 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "path", $EfiPath -Wait -PassThru -NoNewWindow
-            Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "description", "$DistroName" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+            Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "description", "`"$DistroName`"" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
             $r3 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "displayorder", $newGuid, "/addfirst" -Wait -PassThru -NoNewWindow
             $r4 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "default", $newGuid -Wait -PassThru -NoNewWindow
 
