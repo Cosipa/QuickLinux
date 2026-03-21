@@ -315,7 +315,7 @@ $refindCheck.Text = "Install rEFInd boot manager  -  requires disabling Secure B
 $refindCheck.Font = $normalFont
 $refindCheck.Location = New-Object System.Drawing.Point(10, 503)
 $refindCheck.Size = New-Object System.Drawing.Size(680, 25)
-$refindCheck.Checked = $true
+$refindCheck.Checked = $false
 $form.Controls.Add($refindCheck)
 
 # Start button
