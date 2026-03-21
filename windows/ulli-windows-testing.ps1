@@ -1940,7 +1940,7 @@ function New-RefindPartition {
         $refindDriveLetter = $refindPartition.DriveLetter
 
         if (-not $refindDriveLetter) {
-            $refindPartition | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
+            $refindPartition | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue | Out-Null
             Start-Sleep -Seconds 2
             $refindPartition = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $refindPartition.PartitionNumber
             $refindDriveLetter = $refindPartition.DriveLetter
@@ -1954,7 +1954,7 @@ function New-RefindPartition {
             -FileSystem FAT32 `
             -NewFileSystemLabel "REFIND" `
             -Confirm:$false `
-            -ErrorAction Stop
+            -ErrorAction Stop | Out-Null
 
         Log-Message "rEFInd partition created as ${refindDriveLetter}: (REFIND)"
         return $refindDriveLetter
@@ -1993,7 +1993,7 @@ exit
                 if ($refPart) {
                     $refindDriveLetter = $refPart.DriveLetter
                     if (-not $refindDriveLetter) {
-                        $refPart | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
+                        $refPart | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue | Out-Null
                         Start-Sleep -Seconds 2
                         $refPart = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $refPart.PartitionNumber
                         $refindDriveLetter = $refPart.DriveLetter
@@ -2004,7 +2004,7 @@ exit
                             -FileSystem FAT32 `
                             -NewFileSystemLabel "REFIND" `
                             -Confirm:$false `
-                            -ErrorAction Stop
+                            -ErrorAction Stop | Out-Null
                         Log-Message "rEFInd partition created via diskpart as ${refindDriveLetter}: (REFIND)"
                         return $refindDriveLetter
                     }
