@@ -10,7 +10,7 @@
 
 Install a bootable Linux partition to your hard drive without a USB stick or manual BIOS configuration.
 
-> **⚠️ WARNING:** THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/CRITICAL PC. THIS SOFTWARE IS PROVIDED AS-IS. THE AUTHOR ACCEPTS NO LIABILITY FOR DAMAGES OR DATA LOSS CAUSED BY THIS SOFTWARE. BACK UP YOUR DATA BEFORE USE. USE AT YOUR OWN RISK.
+> **⚠️ WARNING BETA SOFTWARE** — Modifies your disk's partition table and UEFI boot configuration. Errors during this process may leave your system unbootable and require manual recovery. In the rare situation where this could occur, most windows installations can be fully recovered by typing bcdboot C:\Windows and then hitting Enter in the command prompt in the Windows recovery environment. Back up your data before use. Use at your own risk.
 
 ---
 
