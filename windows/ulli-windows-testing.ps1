@@ -2252,15 +2252,20 @@ function Start-Installation {
                     # wsl --install may return non-zero when a reboot is needed
                     $needsReboot = $wslInstallOutput | Where-Object { $_ -match "restart|reboot" }
                     if ($needsReboot) {
-                        Log-Message "WSL installed but a system restart is required." -Error
-                        [System.Windows.Forms.MessageBox]::Show(
+                        Log-Message "WSL installed but a system restart is required."
+                        $rebootNow = [System.Windows.Forms.MessageBox]::Show(
                             "WSL has been installed but a system restart is required " +
                             "before it can be used.`n`n" +
-                            "Please restart your computer and re-run ULLI.",
+                            "The computer will restart after you click OK.`n" +
+                            "Please re-run ULLI after the restart.",
                             "Restart Required",
-                            [System.Windows.Forms.MessageBoxButtons]::OK,
+                            [System.Windows.Forms.MessageBoxButtons]::OKCancel,
                             [System.Windows.Forms.MessageBoxIcon]::Information
                         )
+                        if ($rebootNow -eq [System.Windows.Forms.DialogResult]::OK) {
+                            Log-Message "Restarting computer for WSL installation..."
+                            Restart-Computer -Force
+                        }
                         Set-Status "Ready to install"
                         return
                     }
@@ -2271,15 +2276,20 @@ function Start-Installation {
 
                 if (-not (Test-WslAvailable)) {
                     # WSL feature may be enabled but needs reboot
-                    Log-Message "WSL is not yet available after installation." -Error
-                    [System.Windows.Forms.MessageBox]::Show(
+                    Log-Message "WSL is not yet available after installation."
+                    $rebootNow = [System.Windows.Forms.MessageBox]::Show(
                         "WSL was installed but is not yet available.`n`n" +
-                        "A system restart is likely required.`n" +
-                        "Please restart your computer and re-run ULLI.",
+                        "A system restart is required.`n" +
+                        "The computer will restart after you click OK.`n" +
+                        "Please re-run ULLI after the restart.",
                         "Restart Required",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxButtons]::OKCancel,
                         [System.Windows.Forms.MessageBoxIcon]::Information
                     )
+                    if ($rebootNow -eq [System.Windows.Forms.DialogResult]::OK) {
+                        Log-Message "Restarting computer for WSL installation..."
+                        Restart-Computer -Force
+                    }
                     Set-Status "Ready to install"
                     return
                 }
