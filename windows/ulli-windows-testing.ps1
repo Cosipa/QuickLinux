@@ -2213,6 +2213,26 @@ function Start-Installation {
     $script:WslMountInfo = $null  # track WSL mount for cleanup
     Log-Message "Disk plan approved. Strategy: $selectedStrategy, Target disk: $targetDiskNumber, Linux size: $linuxSizeGB GB$refindNote$ext4Note"
 
+    # Validate WSL availability if ext4 boot is selected
+    if ($useExt4Boot) {
+        Log-Message "Checking WSL availability for ext4 boot partition..."
+        if (-not (Test-WslAvailable)) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "WSL (Windows Subsystem for Linux) is required to create ext4 partitions.`n`n" +
+                "Please install WSL first:`n" +
+                "  wsl --install`n`n" +
+                "Then restart your computer and re-run ULLI.",
+                "WSL Required",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            Log-Message "Installation cancelled: WSL is not available." -Error
+            Set-Status "Ready to install"
+            return
+        }
+        Log-Message "WSL is available."
+    }
+
     # Now lock the UI and proceed
     $script:IsRunning = $true
     Set-UILocked $true
@@ -3669,19 +3689,6 @@ $ext4BootCheck.Add_CheckedChanged({
         # ext4 requires rEFInd (UEFI can't read ext4 natively)
         if (-not $refindCheck.Checked) {
             $refindCheck.Checked = $true
-        }
-        # Check WSL availability
-        if (-not (Test-WslAvailable)) {
-            [System.Windows.Forms.MessageBox]::Show(
-                "WSL (Windows Subsystem for Linux) is required to create ext4 partitions.`n`n" +
-                "Please install WSL first:`n" +
-                "  wsl --install`n`n" +
-                "Then restart your computer and re-run ULLI.",
-                "WSL Required",
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-            $ext4BootCheck.Checked = $false
         }
     }
 })
