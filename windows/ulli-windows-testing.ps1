@@ -390,7 +390,7 @@ function Test-WslAvailable {
 }
 
 function Install-WslDistro {
-    # Install just a WSL distro — works when WSL features are already enabled (e.g. after reboot)
+    # Install just a WSL distro -- works when WSL features are already enabled (e.g. after reboot)
     Log-Message "No WSL distribution found. Installing Ubuntu..."
     Set-Status "Installing WSL Ubuntu distribution..."
     $form.Refresh()
@@ -418,7 +418,7 @@ function Install-WslDistro {
         return $true
     }
 
-    # Distro may need initialization — try launching it briefly
+    # Distro may need initialization -- try launching it briefly
     Log-Message "Initializing WSL distribution..."
     & wsl -e true 2>&1 | Out-Null
     Start-Sleep -Seconds 5
@@ -2256,7 +2256,7 @@ function Start-Installation {
     $script:WslMountInfo = $null  # track WSL mount for cleanup
     Log-Message "Disk plan approved. Strategy: $selectedStrategy, Target disk: $targetDiskNumber, Linux size: $linuxSizeGB GB$refindNote$ext4Note"
 
-    # Validate WSL availability if ext4 boot is selected — auto-install if missing
+    # Validate WSL availability if ext4 boot is selected -- auto-install if missing
     if ($useExt4Boot) {
         Log-Message "Checking WSL availability for ext4 boot partition..."
         if (-not (Test-WslAvailable)) {
@@ -2265,7 +2265,7 @@ function Start-Installation {
             $distroInstalled = Install-WslDistro
 
             if (-not $distroInstalled -and -not (Test-WslAvailable)) {
-                # Step 2: Distro install failed — WSL features likely not active, need full install + reboot
+                # Step 2: Distro install failed -- WSL features likely not active, need full install + reboot
                 $installWsl = [System.Windows.Forms.MessageBox]::Show(
                     "WSL (Windows Subsystem for Linux) is required to create ext4 partitions " +
                     "but is not currently available.`n`n" +
@@ -2273,7 +2273,7 @@ function Start-Installation {
                     "This will:`n" +
                     "  - Enable the WSL and Virtual Machine Platform features`n" +
                     "  - A system restart will be required`n" +
-                    "  - After restart, re-run ULLI — the distro will be installed automatically`n`n" +
+                    "  - After restart, re-run ULLI - the distro will be installed automatically`n`n" +
                     "Note: Virtualization must be enabled in your BIOS/UEFI settings.",
                     "Install WSL?",
                     [System.Windows.Forms.MessageBoxButtons]::YesNo,
