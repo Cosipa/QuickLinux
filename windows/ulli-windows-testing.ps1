@@ -396,16 +396,18 @@ function Install-WslDistro {
     Set-Status "Checking WSL2 availability..."
     $form.Refresh()
 
-    # Check if Hyper-V Host Compute Service is running (required for WSL2 VMs)
-    $vmcompute = Get-Service vmcompute -ErrorAction SilentlyContinue
-    if (-not $vmcompute -or $vmcompute.Status -ne 'Running') {
-        Log-Message "WSL2 is not functional: Hyper-V compute service (vmcompute) is not running." -Error
-        if (-not $vmcompute) {
-            Log-Message "  The Virtual Machine Platform feature may not be installed."
-        } else {
-            Log-Message "  Service status: $($vmcompute.Status)"
+    # Check if hardware virtualization is available (VT-x/AMD-V)
+    # Without this, Hyper-V and WSL2 cannot create VMs
+    try {
+        $cpuInfo = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        if ($cpuInfo.VirtualizationFirmwareEnabled -eq $false) {
+            Log-Message "WSL2 is not functional: hardware virtualization (VT-x/AMD-V) is not available." -Error
+            Log-Message "  Enable virtualization in BIOS/UEFI, or enable nested virtualization if in a VM."
+            Log-Message "  (VirtualBox: power off VM fully, then run VBoxManage modifyvm <name> --nested-hw-virt on)"
+            return $false
         }
-        return $false
+    } catch {
+        Log-Message "Warning: Could not check hardware virtualization status: $_"
     }
 
     Log-Message "No WSL distribution found. Installing Ubuntu..."
