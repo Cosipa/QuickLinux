@@ -396,11 +396,15 @@ function Install-WslDistro {
     Set-Status "Checking WSL2 availability..."
     $form.Refresh()
 
-    $preCheck = & wsl --set-default-version 2 2>&1 | ForEach-Object { "$_" }
-    $preCheckStr = ($preCheck -join " ") -replace "`0", ""
-    if ($preCheckStr -match "HCS_E_HYPERV_NOT_INSTALLED|not supported|EnableVirtualization|enable.*Virtual Machine Platform|0x80370102") {
-        Log-Message "WSL2 is not functional: Hyper-V/Virtual Machine Platform not active." -Error
-        Log-Message "  Detail: $preCheckStr"
+    # Check if Hyper-V Host Compute Service is running (required for WSL2 VMs)
+    $vmcompute = Get-Service vmcompute -ErrorAction SilentlyContinue
+    if (-not $vmcompute -or $vmcompute.Status -ne 'Running') {
+        Log-Message "WSL2 is not functional: Hyper-V compute service (vmcompute) is not running." -Error
+        if (-not $vmcompute) {
+            Log-Message "  The Virtual Machine Platform feature may not be installed."
+        } else {
+            Log-Message "  Service status: $($vmcompute.Status)"
+        }
         return $false
     }
 
