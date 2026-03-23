@@ -391,23 +391,37 @@ function Test-WslAvailable {
 
 function Install-WslDistro {
     # Install just a WSL distro -- works when WSL features are already enabled (e.g. after reboot)
+    # First, quick check if WSL2 can even work (avoids downloading a distro for nothing)
+    Log-Message "Checking if WSL2 is functional..."
+    Set-Status "Checking WSL2 availability..."
+    $form.Refresh()
+
+    $preCheck = & wsl --set-default-version 2 2>&1 | ForEach-Object { "$_" }
+    $preCheckStr = ($preCheck -join " ") -replace "`0", ""
+    if ($preCheckStr -match "HCS_E_HYPERV_NOT_INSTALLED|not supported|EnableVirtualization|enable.*Virtual Machine Platform|0x80370102") {
+        Log-Message "WSL2 is not functional: Hyper-V/Virtual Machine Platform not active." -Error
+        Log-Message "  Detail: $preCheckStr"
+        return $false
+    }
+
     Log-Message "No WSL distribution found. Installing Ubuntu..."
     Set-Status "Installing WSL Ubuntu distribution..."
     $form.Refresh()
 
     $distroOutput = & wsl --install -d Ubuntu --no-launch 2>&1
     $distroExit = $LASTEXITCODE
-    foreach ($line in $distroOutput) {
-        $cleanLine = ($line -replace "`0", "").Trim()
-        if ($cleanLine) { Log-Message "  WSL: $cleanLine" }
+    # Convert ErrorRecord objects to strings for reliable pattern matching
+    $distroLines = @($distroOutput | ForEach-Object { ("$_" -replace "`0", "").Trim() } | Where-Object { $_ })
+    foreach ($line in $distroLines) {
+        Log-Message "  WSL: $line"
     }
 
-    # Check for errors indicating WSL features aren't ready (needs full install + reboot)
-    $featureMissing = $distroOutput | Where-Object {
+    # Check for errors indicating WSL features aren't ready
+    $featureMissing = $distroLines | Where-Object {
         $_ -match "HCS_E_HYPERV_NOT_INSTALLED|Virtual Machine Platform|not supported with your current|EnableVirtualization|0x80370102"
     }
     if ($featureMissing) {
-        Log-Message "WSL distro install failed: WSL features not yet active." -Error
+        Log-Message "WSL distro install failed: WSL2 virtualization not available." -Error
         return $false
     }
 
