@@ -16,7 +16,7 @@ Install a bootable Linux partition to your hard drive without a USB stick or man
 
 Acknowledgement: AI (mostly Claude) was used in the development of this software. That being said I always test before releasing code.
 
-For those who do not want to use a program with AI generated source code, I'm also working on ULLI-organic, a non-AI version, which can be found here: [https://github.com/rltvty2/ulli-organic](https://github.com/rltvty2/ulli-organic) For now it only installs Linux Mint from Windows.
+For those who do not want to use a program with AI generated source code, I'm also working on ULLI-organic, a non-AI version, which can be found here: [https://github.com/rltvty2/ulli-organic](https://github.com/rltvty2/ulli-organic)
 
 ## Running under Linux
 
