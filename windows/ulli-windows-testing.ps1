@@ -389,20 +389,9 @@ function Test-WslAvailable {
     }
 }
 
-function Test-WslFeaturesEnabled {
-    # Check if WSL and Virtual Machine Platform features are enabled (but distro may be missing)
-    try {
-        $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -ErrorAction Stop
-        $vmpFeature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -ErrorAction Stop
-        return ($wslFeature.State -eq "Enabled" -and $vmpFeature.State -eq "Enabled")
-    } catch {
-        return $false
-    }
-}
-
 function Install-WslDistro {
-    # Install just a WSL distro (features already enabled, no reboot needed)
-    Log-Message "WSL features are enabled but no distribution found. Installing Ubuntu..."
+    # Install just a WSL distro — works when WSL features are already enabled (e.g. after reboot)
+    Log-Message "No WSL distribution found. Installing Ubuntu..."
     Set-Status "Installing WSL Ubuntu distribution..."
     $form.Refresh()
 
@@ -411,6 +400,15 @@ function Install-WslDistro {
     foreach ($line in $distroOutput) {
         $cleanLine = ($line -replace "`0", "").Trim()
         if ($cleanLine) { Log-Message "  WSL: $cleanLine" }
+    }
+
+    # Check for errors indicating WSL features aren't ready (needs full install + reboot)
+    $featureMissing = $distroOutput | Where-Object {
+        $_ -match "HCS_E_HYPERV_NOT_INSTALLED|Virtual Machine Platform|not supported with your current|EnableVirtualization|0x80370102"
+    }
+    if ($featureMissing) {
+        Log-Message "WSL distro install failed: WSL features not yet active." -Error
+        return $false
     }
 
     Start-Sleep -Seconds 5
@@ -2262,34 +2260,20 @@ function Start-Installation {
     if ($useExt4Boot) {
         Log-Message "Checking WSL availability for ext4 boot partition..."
         if (-not (Test-WslAvailable)) {
-            # Distinguish: are WSL features enabled (just missing a distro) or not enabled at all?
-            $featuresEnabled = Test-WslFeaturesEnabled
+            # Step 1: Try installing just a distro (handles post-reboot case where features are already active)
+            Log-Message "WSL not ready. Attempting to install Ubuntu distribution..."
+            $distroInstalled = Install-WslDistro
 
-            if ($featuresEnabled) {
-                # WSL + VMP features are enabled (e.g. after a reboot) — just need a distro, no reboot
-                if (-not (Install-WslDistro)) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "WSL features are enabled but the Ubuntu distribution could not be installed.`n`n" +
-                        "Please try installing it manually by running:`n" +
-                        "  wsl --install -d Ubuntu`n`n" +
-                        "Then re-run ULLI.",
-                        "WSL Distribution Install Failed",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Error
-                    )
-                    Set-Status "Ready to install"
-                    return
-                }
-            } else {
-                # WSL features not enabled — need full install, likely requires reboot
+            if (-not $distroInstalled -and -not (Test-WslAvailable)) {
+                # Step 2: Distro install failed — WSL features likely not active, need full install + reboot
                 $installWsl = [System.Windows.Forms.MessageBox]::Show(
                     "WSL (Windows Subsystem for Linux) is required to create ext4 partitions " +
-                    "but is not currently installed.`n`n" +
+                    "but is not currently available.`n`n" +
                     "Would you like to install WSL now?`n`n" +
                     "This will:`n" +
                     "  - Enable the WSL and Virtual Machine Platform features`n" +
                     "  - A system restart will be required`n" +
-                    "  - After restart, re-run ULLI and the Linux distribution will be installed automatically`n`n" +
+                    "  - After restart, re-run ULLI — the distro will be installed automatically`n`n" +
                     "Note: Virtualization must be enabled in your BIOS/UEFI settings.",
                     "Install WSL?",
                     [System.Windows.Forms.MessageBoxButtons]::YesNo,
@@ -2306,7 +2290,6 @@ function Start-Installation {
                 $form.Refresh()
 
                 try {
-                    # Install WSL features (and attempt distro, though it may fail pre-reboot)
                     $wslInstallOutput = & wsl --install --no-launch 2>&1
                     $wslInstallExit = $LASTEXITCODE
                     foreach ($line in $wslInstallOutput) {
@@ -2314,49 +2297,21 @@ function Start-Installation {
                         if ($cleanLine) { Log-Message "  WSL: $cleanLine" }
                     }
 
-                    if ($wslInstallExit -ne 0) {
-                        $needsReboot = $wslInstallOutput | Where-Object { $_ -match "restart|reboot" }
-                        if ($needsReboot) {
-                            Log-Message "WSL features installed but a system restart is required."
-                            $rebootNow = [System.Windows.Forms.MessageBox]::Show(
-                                "WSL features have been installed but a system restart is required.`n`n" +
-                                "After restart, re-run ULLI and select ext4 boot again.`n" +
-                                "The Linux distribution will be installed automatically (no second reboot needed).`n`n" +
-                                "The computer will restart after you click OK.",
-                                "Restart Required",
-                                [System.Windows.Forms.MessageBoxButtons]::OKCancel,
-                                [System.Windows.Forms.MessageBoxIcon]::Information
-                            )
-                            if ($rebootNow -eq [System.Windows.Forms.DialogResult]::OK) {
-                                Log-Message "Restarting computer for WSL installation..."
-                                Restart-Computer -Force
-                            }
-                            Set-Status "Ready to install"
-                            return
-                        }
-                    }
-
                     Log-Message "WSL installation command completed. Verifying..."
                     Start-Sleep -Seconds 5
 
-                    # Check if everything worked without reboot
                     if (Test-WslAvailable) {
                         Log-Message "WSL is now available."
-                    } elseif (Test-WslFeaturesEnabled) {
-                        # Features are enabled, just need the distro
-                        Log-Message "WSL features enabled. Installing distribution..."
-                        if (-not (Install-WslDistro)) {
-                            Log-Message "WSL distro install failed after feature install." -Error
-                            Set-Status "Ready to install"
-                            return
-                        }
+                    } elseif (Install-WslDistro) {
+                        # Features enabled, distro installed successfully now
+                        Log-Message "WSL is now available."
                     } else {
-                        # Features still not active — need reboot
+                        # Need reboot for features to activate
                         Log-Message "WSL features require a system restart to activate."
                         $rebootNow = [System.Windows.Forms.MessageBox]::Show(
                             "WSL was installed but requires a system restart.`n`n" +
                             "After restart, re-run ULLI and select ext4 boot again.`n" +
-                            "The Linux distribution will be installed automatically (no second reboot needed).`n`n" +
+                            "The Linux distribution will be installed automatically (no second reboot).`n`n" +
                             "The computer will restart after you click OK.",
                             "Restart Required",
                             [System.Windows.Forms.MessageBoxButtons]::OKCancel,
