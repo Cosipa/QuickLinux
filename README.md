@@ -8,17 +8,19 @@ will be able to install the distribution fully.
 
 ## How to use QuickLinux
 
-QuickLinux must be run in Admin mode because it modifies disk partitions and boot settings.
-Here are a few ways to open PowerShell as administrator:
+QuickLinux must be run in Admin mode because it modifies disk partitions and
+boot settings. Here are a few ways to open PowerShell as administrator:
 
 1. **Start menu Method:**
    - Right-click on the start menu.
-   - Choose "Windows PowerShell (Admin)" (for Windows 10) or "Terminal (Admin)" (for Windows 11).
+   - Choose "Windows PowerShell (Admin)" (for Windows 10) or "Terminal (Admin)"
+     (for Windows 11).
 
 2. **Search and Launch Method:**
    - Press the Windows key.
    - Type "PowerShell" or "Terminal" (for Windows 11).
-   - Press `Ctrl + Shift + Enter` or right-click and choose "Run as administrator" to launch it with administrator privileges.
+   - Press `Ctrl + Shift + Enter` or right-click and choose "Run as
+     administrator" to launch it with administrator privileges.
 
 ### Launch Command
 
@@ -29,7 +31,8 @@ irm "https://cosipa.dev/quicklinux" | iex
 ```
 
 > [!NOTE]
-> After running the command, a window will appear asking for administrator access - this is normal and required for disk modifications.
+> After running the command, a window will appear asking for administrator
+> access - this is normal and required for disk modifications.
 
 ## What this tool does
 
@@ -99,11 +102,11 @@ QuickLinux includes an option to install the boot manager rEFInd
   own `.iso` files, but Debian and Fedora based distros don't work for now.
   Linux Mint Debian Edition is an exception.
 
-- QuickLinux attempts to set Linux as the default boot entry automatically, but this
-  doesn't work on all systems. You may have to select Linux as the default boot
-  option in the BIOS. The BIOS is accessible during startup by pressing F2, DEL,
-  F10, ESC, F1, F12, or F11. Refer to your PC or motherboard's documentation for
-  more information.
+- QuickLinux attempts to set Linux as the default boot entry automatically, but
+  this doesn't work on all systems. You may have to select Linux as the default
+  boot option in the BIOS. The BIOS is accessible during startup by pressing F2,
+  DEL, F10, ESC, F1, F12, or F11. Refer to your PC or motherboard's
+  documentation for more information.
 
 ---
 
