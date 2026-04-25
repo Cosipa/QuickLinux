@@ -17,12 +17,11 @@ jobs:
       - name: Compile QuickLinux
         run: |
           mkdir -p dist
-          # Concatenate source modules in dependency order
-          cat src/start.ps1 src/download.ps1 src/disk.ps1 src/wsl.ps1 src/ui.ps1 src/main.ps1 > dist/quicklinux-windows.ps1
-          # Embed distros.json as a here-string
+          cat src/start.ps1 > dist/quicklinux-windows.ps1
           echo '$script:DistrosJson = @'"'" >> dist/quicklinux-windows.ps1
           cat config/distros.json >> dist/quicklinux-windows.ps1
           echo "'@" >> dist/quicklinux-windows.ps1
+          cat src/download.ps1 src/disk.ps1 src/wsl.ps1 src/ui.ps1 src/main.ps1 >> dist/quicklinux-windows.ps1
       
       - name: Create Release
         env:
