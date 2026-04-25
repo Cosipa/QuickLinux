@@ -1,596 +1,11 @@
-# Linux Installer for Windows 11 UEFI Systems - Enhanced Edition with Auto-Restart
-# PowerShell GUI Version - Fixed unit conversions for proper partition placement
-# Run as Administrator: powershell -ExecutionPolicy Bypass -File linux_installer.ps1
-# Distributions: Linux Mint 22.3 "Zena" (Cinnamon Edition), CachyOS Desktop, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, Fedora 43 KDE
-# Optional rEFInd boot manager on a dedicated FAT32 partition with ext4 driver
-# Optional ext4 boot partition (12 GB) via WSL instead of FAT32 (7 GB) - requires WSL + rEFInd
-
-#Requires -Version 5.1
-
-# ─── Auto-elevate to Administrator ────────────────────────────────────────────
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    try {
-        Start-Process powershell.exe -ArgumentList @(
-            "-ExecutionPolicy", "Bypass",
-            "-File", "`"$PSCommandPath`""
-        ) -Verb RunAs
-    } catch {
-        Write-Host "ERROR: Administrator privileges are required to run ULLI." -ForegroundColor Red
-        Write-Host "Please right-click the script and select 'Run as Administrator'."
-        Read-Host "Press Enter to exit"
-    }
-    exit
-}
-
-# Add required assemblies
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
-# Global variables
-$script:MinPartitionSizeGB = 7
-$script:MinLinuxSizeGB = 20
-$script:RefindUrl = "https://sourceforge.net/projects/refind/files/0.14.2/refind-bin-0.14.2.zip/download"
-$script:RefindFilename = "refind-bin-0.14.2.zip"
-$script:RefindSizeMB = 100  # 100 MB FAT32 partition for rEFInd
-$script:MinPartitionSizeGBExt4 = 12  # 12 GB ext4 boot partition (requires WSL + rEFInd)
-
-# ─── Distro Data Table ────────────────────────────────────────────────────────
-$script:Distros = [ordered]@{
-    mint = @{
-        Name          = "Linux Mint 22.3"
-        RadioLabel    = 'Linux Mint 22.3 "Zena" - Cinnamon Edition (approx. 2.9 GB)'
-        ExpectedSize  = "approximately 2.9 GB"
-        Mirrors       = @(
-            "https://mirrors.kernel.org/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso",
-            "https://mirror.csclub.uwaterloo.ca/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso",
-            "https://mirrors.seas.harvard.edu/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso",
-            "https://mirror.arizona.edu/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso"
-        )
-        Checksum      = "a081ab202cfda17f6924128dbd2de8b63518ac0531bcfe3f1a1b88097c459bd4"
-        IsoFilename   = "linuxmint-22.3-cinnamon-64bit.iso"
-        DownloadPage  = "https://linuxmint.com/edition.php?id=326"
-        DownloadMsg   = "Please download Linux Mint 22.3 Cinnamon (64-bit) and save it as:"
-        Keyword       = "Mint"
-        ValidationFile = "casper\vmlinuz"
-        IsHybrid      = $false
-    }
-    cachyos = @{
-        Name          = "CachyOS Desktop"
-        RadioLabel    = "CachyOS Desktop (approx. 2.6 GB)"
-        ExpectedSize  = "approximately 2.6 GB"
-        Mirrors       = @(
-            "https://cdn77.cachyos.org/ISO/desktop/260308/cachyos-desktop-linux-260308.iso"
-        )
-        Checksum      = "69f1ffbded158d4d95e6567e994b1813d0d040d323742aef9f489a0b71ad1d29"
-        IsoFilename   = "cachyos-desktop-linux-260308.iso"
-        DownloadPage  = "https://cachyos.org/download/"
-        DownloadMsg   = "Please download CachyOS Desktop and save it as:"
-        Keyword       = "CachyOS"
-        ValidationFile = "arch\boot\x86_64\vmlinuz-linux-cachyos"
-        IsHybrid      = $true
-    }
-    ubuntu = @{
-        Name          = "Ubuntu 24.04.4 LTS"
-        RadioLabel    = "Ubuntu 24.04.4 LTS - GNOME Edition (approx. 5.9 GB)"
-        ExpectedSize  = "approximately 5.9 GB"
-        Mirrors       = @(
-            "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-desktop-amd64.iso",
-            "https://mirror.cs.uchicago.edu/ubuntu-releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso",
-            "https://mirrors.mit.edu/ubuntu-releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso",
-            "https://ubuntu.osuosl.org/ubuntu-releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso"
-        )
-        Checksum      = "3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e"
-        IsoFilename   = "ubuntu-24.04.4-desktop-amd64.iso"
-        DownloadPage  = "https://ubuntu.com/download/desktop"
-        DownloadMsg   = "Please download Ubuntu 24.04.4 LTS (64-bit) and save it as:"
-        Keyword       = "Ubuntu"
-        ValidationFile = "casper\vmlinuz"
-        IsHybrid      = $false
-    }
-    kubuntu = @{
-        Name          = "Kubuntu 24.04.4 LTS"
-        RadioLabel    = "Kubuntu 24.04.4 LTS - KDE Plasma 5 Edition (approx. 4.2 GB)"
-        ExpectedSize  = "approximately 4.2 GB"
-        Mirrors       = @(
-            "https://cdimage.ubuntu.com/kubuntu/releases/24.04.4/release/kubuntu-24.04.4-desktop-amd64.iso",
-            "https://mirror.netzwerge.de/ubuntu-dvd/kubuntu/releases/24.04/release/kubuntu-24.04.4-desktop-amd64.iso",
-            "https://ftpmirror.your.org/pub/ubuntu/cdimage/kubuntu/releases/24.04/release/kubuntu-24.04.4-desktop-amd64.iso",
-            "https://www.mirrorservice.org/sites/cdimage.ubuntu.com/cdimage/kubuntu/releases/24.04/release/kubuntu-24.04.4-desktop-amd64.iso"
-        )
-        Checksum      = "02cda2568cb96c090b0438a31a7d2e7b07357fde16217c215e7c3f45263bcc49"
-        IsoFilename   = "kubuntu-24.04.4-desktop-amd64.iso"
-        DownloadPage  = "https://kubuntu.org/getkubuntu/"
-        DownloadMsg   = "Please download Kubuntu 24.04.4 LTS (64-bit) and save it as:"
-        Keyword       = "Kubuntu"
-        ValidationFile = "casper\vmlinuz"
-        IsHybrid      = $false
-    }
-    debian = @{
-        Name          = "Debian Live 13.3.0 KDE"
-        RadioLabel    = "Debian Live 13.3.0 - KDE Edition (approx. 3.2 GB)"
-        ExpectedSize  = "approximately 3.2 GB"
-        Mirrors       = @(
-            "https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.3.0-amd64-kde.iso",
-            "https://mirrors.kernel.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.3.0-amd64-kde.iso",
-            "https://mirror.csclub.uwaterloo.ca/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.3.0-amd64-kde.iso",
-            "https://mirrors.mit.edu/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.3.0-amd64-kde.iso"
-        )
-        Checksum      = "6a162340bca02edf67e159c847cd605618a77d50bf82088ee514f83369e43b89"
-        IsoFilename   = "debian-live-13.3.0-amd64-kde.iso"
-        DownloadPage  = "https://www.debian.org/CD/live/"
-        DownloadMsg   = "Please download Debian Live 13.3.0 KDE (amd64) and save it as:"
-        Keyword       = "Debian"
-        ValidationFile = "live\vmlinuz"
-        IsHybrid      = $true
-    }
-    fedora = @{
-        Name          = "Fedora 43 KDE"
-        RadioLabel    = "Fedora 43 - KDE Plasma Desktop (approx. 3.0 GB)"
-        ExpectedSize  = "approximately 3.0 GB"
-        Mirrors       = @(
-            "https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/43/KDE/x86_64/iso/Fedora-KDE-Desktop-Live-43-1.6.x86_64.iso",
-            "https://mirror.web-ster.com/fedora/releases/43/KDE/x86_64/iso/Fedora-KDE-Desktop-Live-43-1.6.x86_64.iso",
-            "https://forksystems.mm.fcix.net/fedora/linux/releases/43/KDE/x86_64/iso/Fedora-KDE-Desktop-Live-43-1.6.x86_64.iso",
-            "https://southfront.mm.fcix.net/fedora/linux/releases/43/KDE/x86_64/iso/Fedora-KDE-Desktop-Live-43-1.6.x86_64.iso"
-        )
-        Checksum      = "181fe3e265fb5850c929f5afb7bdca91bb433b570ef39ece4a7076187435fdab"
-        IsoFilename   = "Fedora-KDE-Desktop-Live-43-1.6.x86_64.iso"
-        DownloadPage  = "https://fedoraproject.org/kde/download/"
-        DownloadMsg   = "Please download Fedora 43 KDE Plasma Desktop (x86_64) and save it as:"
-        Keyword       = "Fedora"
-        ValidationFile = "LiveOS\squashfs.img"
-        IsHybrid      = $true
-    }
-}
-
-$script:IsoPath = ""
-$script:CustomIsoPath = ""
-$script:IsRunning = $false
-$script:MaxAvailableGB = 10000
-
-# Detect screen resolution and adapt window size
-$primaryScreen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$scrW = $primaryScreen.Width
-$scrH = $primaryScreen.Height
-if ($scrH -le 900) {
-    $formW = 720
-    $formH = [Math]::Min($scrH - 60, 670)
-} else {
-    $formW = 720
-    $formH = 690
-}
-
-# Create main form
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "USB-less Linux Installer for Windows"
-$form.Size = New-Object System.Drawing.Size($formW, $formH)
-$form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "Sizable"
-$form.MinimumSize = New-Object System.Drawing.Size(720, 480)
-$form.AutoScroll = $true
-$form.Icon = [System.Drawing.SystemIcons]::Application
-
-# Create fonts
-$headerFont = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
-$normalFont = New-Object System.Drawing.Font("Segoe UI", 9)
-$boldFont = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-
-# Header label
-$headerLabel = New-Object System.Windows.Forms.Label
-$headerLabel.Text = "USB-less Linux Installer for Windows"
-$headerLabel.Font = $headerFont
-$headerLabel.ForeColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
-$headerLabel.Location = New-Object System.Drawing.Point(10, 10)
-$headerLabel.Size = New-Object System.Drawing.Size(680, 30)
-$headerLabel.TextAlign = "MiddleCenter"
-$form.Controls.Add($headerLabel)
-
-# Sub-header label
-$subHeaderLabel = New-Object System.Windows.Forms.Label
-$subHeaderLabel.Text = "Mint 22.3, Ubuntu 24.04.4, Kubuntu 24.04.4, Debian 13.3.0, or Fedora 43  |  No USB required"
-$subHeaderLabel.Font = $normalFont
-$subHeaderLabel.ForeColor = [System.Drawing.Color]::DimGray
-$subHeaderLabel.Location = New-Object System.Drawing.Point(10, 42)
-$subHeaderLabel.Size = New-Object System.Drawing.Size(680, 18)
-$subHeaderLabel.TextAlign = "MiddleCenter"
-$form.Controls.Add($subHeaderLabel)
-
-# Status label
-$statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Text = "Ready to install"
-$statusLabel.Font = $normalFont
-$statusLabel.Location = New-Object System.Drawing.Point(10, 62)
-$statusLabel.Size = New-Object System.Drawing.Size(680, 20)
-$statusLabel.TextAlign = "MiddleCenter"
-$form.Controls.Add($statusLabel)
-
-# Progress bar
-$progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(10, 84)
-$progressBar.Size = New-Object System.Drawing.Size(680, 14)
-$progressBar.Style = "Continuous"
-$form.Controls.Add($progressBar)
-
-# ISO source group
-$isoGroup = New-Object System.Windows.Forms.GroupBox
-$isoGroup.Text = "Distribution"
-$isoGroup.Font = $normalFont
-$isoGroup.Location = New-Object System.Drawing.Point(10, 104)
-$isoGroup.Size = New-Object System.Drawing.Size(680, 100)
-$form.Controls.Add($isoGroup)
-
-# ─── Distro dropdown list ─────────────────────────────────────────────────────
-$script:DistroKeys = @($script:Distros.Keys)
-$distroCombo = New-Object System.Windows.Forms.ComboBox
-$distroCombo.Font = $boldFont
-$distroCombo.Location = New-Object System.Drawing.Point(10, 22)
-$distroCombo.Size = New-Object System.Drawing.Size(650, 24)
-$distroCombo.ForeColor = [System.Drawing.Color]::Black
-$distroCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-foreach ($distroId in $script:DistroKeys) {
-    $distroCombo.Items.Add($script:Distros[$distroId].RadioLabel) | Out-Null
-}
-$distroCombo.SelectedIndex = 0
-$isoGroup.Controls.Add($distroCombo)
-
-# Custom ISO checkbox
-$customRadio = New-Object System.Windows.Forms.CheckBox
-$customRadio.Text = "Use existing ISO file:"
-$customRadio.Font = $normalFont
-$customRadio.Location = New-Object System.Drawing.Point(10, 56)
-$customRadio.Size = New-Object System.Drawing.Size(160, 20)
-$isoGroup.Controls.Add($customRadio)
-
-# Custom ISO path textbox
-$customIsoTextbox = New-Object System.Windows.Forms.TextBox
-$customIsoTextbox.Font = $normalFont
-$customIsoTextbox.Location = New-Object System.Drawing.Point(172, 54)
-$customIsoTextbox.Size = New-Object System.Drawing.Size(388, 24)
-$customIsoTextbox.ReadOnly = $true
-$customIsoTextbox.Enabled = $false
-$isoGroup.Controls.Add($customIsoTextbox)
-
-# Browse button
-$browseButton = New-Object System.Windows.Forms.Button
-$browseButton.Text = "Browse..."
-$browseButton.Font = $normalFont
-$browseButton.Location = New-Object System.Drawing.Point(568, 53)
-$browseButton.Size = New-Object System.Drawing.Size(100, 26)
-$browseButton.Enabled = $false
-$isoGroup.Controls.Add($browseButton)
-
-# Disk info group
-$diskGroup = New-Object System.Windows.Forms.GroupBox
-$diskGroup.Text = "Disk Information"
-$diskGroup.Font = $normalFont
-$diskGroup.Location = New-Object System.Drawing.Point(10, 214)
-$diskGroup.Size = New-Object System.Drawing.Size(680, 130)
-$form.Controls.Add($diskGroup)
-
-# Disk info text
-$diskInfoText = New-Object System.Windows.Forms.Label
-$diskInfoText.Font = $normalFont
-$diskInfoText.Location = New-Object System.Drawing.Point(10, 20)
-$diskInfoText.Size = New-Object System.Drawing.Size(660, 100)
-$diskGroup.Controls.Add($diskInfoText)
-
-# Log group
-$logGroup = New-Object System.Windows.Forms.GroupBox
-$logGroup.Text = "Installation Log"
-$logGroup.Font = $normalFont
-$logGroup.Location = New-Object System.Drawing.Point(10, 353)
-$logGroup.Size = New-Object System.Drawing.Size(680, 90)
-$form.Controls.Add($logGroup)
-
-# Log text box
-$logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Multiline = $true
-$logBox.ScrollBars = "Vertical"
-$logBox.ReadOnly = $true
-$logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-$logBox.Location = New-Object System.Drawing.Point(10, 20)
-$logBox.Size = New-Object System.Drawing.Size(660, 60)
-$logGroup.Controls.Add($logBox)
-
-# Delete ISO checkbox
-$deleteIsoCheck = New-Object System.Windows.Forms.CheckBox
-$deleteIsoCheck.Text = "Delete ISO file after installation"
-$deleteIsoCheck.Font = $normalFont
-$deleteIsoCheck.Location = New-Object System.Drawing.Point(10, 453)
-$deleteIsoCheck.Size = New-Object System.Drawing.Size(300, 25)
-$form.Controls.Add($deleteIsoCheck)
-
-# Auto-restart checkbox
-$autoRestartCheck = New-Object System.Windows.Forms.CheckBox
-$autoRestartCheck.Text = "Automatically restart and configure UEFI boot"
-$autoRestartCheck.Font = $normalFont
-$autoRestartCheck.Location = New-Object System.Drawing.Point(10, 478)
-$autoRestartCheck.Size = New-Object System.Drawing.Size(300, 25)
-$autoRestartCheck.Checked = $true
-$form.Controls.Add($autoRestartCheck)
-
-# rEFInd checkbox
-$refindCheck = New-Object System.Windows.Forms.CheckBox
-$refindCheck.Text = "Install rEFInd boot manager  -  requires disabling Secure Boot"
-$refindCheck.Font = $normalFont
-$refindCheck.Location = New-Object System.Drawing.Point(10, 503)
-$refindCheck.Size = New-Object System.Drawing.Size(680, 25)
-$refindCheck.Checked = $false
-$form.Controls.Add($refindCheck)
-
-# ext4 boot partition checkbox
-$ext4BootCheck = New-Object System.Windows.Forms.CheckBox
-$ext4BootCheck.Text = "Use ext4 boot partition (12 GB) instead of FAT32 (7 GB)  -  requires WSL + rEFInd"
-$ext4BootCheck.Font = $normalFont
-$ext4BootCheck.Location = New-Object System.Drawing.Point(10, 528)
-$ext4BootCheck.Size = New-Object System.Drawing.Size(680, 25)
-$ext4BootCheck.Checked = $false
-$form.Controls.Add($ext4BootCheck)
-
-# Start button
-$startButton = New-Object System.Windows.Forms.Button
-$startButton.Text = "Start Installation"
-$startButton.Font = $boldFont
-$startButton.Location = New-Object System.Drawing.Point(390, 560)
-$startButton.Size = New-Object System.Drawing.Size(140, 35)
-$startButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
-$startButton.ForeColor = [System.Drawing.Color]::White
-$startButton.FlatStyle = "Flat"
-$form.Controls.Add($startButton)
-
-# Exit button
-$exitButton = New-Object System.Windows.Forms.Button
-$exitButton.Text = "Exit"
-$exitButton.Font = $normalFont
-$exitButton.Location = New-Object System.Drawing.Point(540, 560)
-$exitButton.Size = New-Object System.Drawing.Size(140, 35)
-$form.Controls.Add($exitButton)
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-function Log-Message {
-    param(
-        [string]$Message,
-        [switch]$Error
-    )
-
-    $timestamp = Get-Date -Format "HH:mm:ss"
-    $fullMessage = "[$timestamp] $Message"
-
-    $logBox.AppendText("$fullMessage`r`n")
-    $logBox.SelectionStart = $logBox.TextLength
-    $logBox.ScrollToCaret()
-
-    if ($Error) {
-        Write-Host $fullMessage -ForegroundColor Red
-    } else {
-        Write-Host $fullMessage
-    }
-}
-
-function Set-Status {
-    param([string]$Status)
-    $statusLabel.Text = $Status
-    $form.Refresh()
-}
-
-function Test-WslAvailable {
-    try {
-        $wslOutput = & wsl --list --quiet 2>&1
-        if ($LASTEXITCODE -ne 0) { return $false }
-        $distros = @($wslOutput | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
-        return ($distros.Count -gt 0)
-    } catch {
-        return $false
-    }
-}
-
-function Install-WslDistro {
-    # Install just a WSL distro -- called only after WSL features are confirmed installed (flag file exists)
-    Log-Message "Installing WSL Ubuntu distribution..."
-    Set-Status "Installing WSL Ubuntu distribution (this may take a few minutes)..."
-    $form.Refresh()
-
-    $distroOutput = & wsl --install -d Ubuntu --no-launch 2>&1
-    $distroExit = $LASTEXITCODE
-    # Convert ErrorRecord objects to strings for reliable pattern matching
-    $distroLines = @($distroOutput | ForEach-Object { ("$_" -replace "`0", "").Trim() } | Where-Object { $_ })
-    foreach ($line in $distroLines) {
-        Log-Message "  WSL: $line"
-    }
-
-    # Check for errors indicating Hyper-V/VMP still not functional
-    $featureMissing = $distroLines | Where-Object {
-        $_ -match "HCS_E_HYPERV_NOT_INSTALLED|Virtual Machine Platform|not supported with your current|EnableVirtualization|0x80370102"
-    }
-    if ($featureMissing) {
-        Log-Message "WSL2 virtualization is not available on this system." -Error
-        Log-Message "  Ensure hardware virtualization (VT-x/AMD-V) is enabled in BIOS/UEFI."
-        Log-Message "  If running in a VM, enable nested virtualization and fully power off/restart the VM."
-        return $false
-    }
-
-    Start-Sleep -Seconds 5
-
-    if (Test-WslAvailable) {
-        Log-Message "WSL Ubuntu distribution installed successfully."
-        return $true
-    }
-
-    # Distro may need initialization -- try launching it briefly
-    Log-Message "Initializing WSL distribution..."
-    & wsl -e true 2>&1 | Out-Null
-    Start-Sleep -Seconds 5
-
-    if (Test-WslAvailable) {
-        Log-Message "WSL is now available."
-        return $true
-    }
-
-    Log-Message "Failed to install WSL Ubuntu distribution." -Error
-    return $false
-}
-
-function Get-WslDefaultDistro {
-    try {
-        $distros = @(& wsl --list --quiet 2>&1 | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
-        if ($distros.Count -gt 0) { return $distros[0] }
-    } catch {}
-    return $null
-}
-
 function Get-BootPartSizeGB {
     if ($ext4BootCheck.Checked) { return $script:MinPartitionSizeGBExt4 }
     return $script:MinPartitionSizeGB
 }
-
 function Get-BootPartFsType {
     if ($ext4BootCheck.Checked) { return "ext4" }
     return "FAT32"
 }
-
-function Format-PartitionExt4Wsl {
-    param(
-        [int]$DiskNumber,
-        [int]$PartitionNumber,
-        [string]$Label = "LINUX_LIVE"
-    )
-
-    $physDrive = "\\.\PHYSICALDRIVE$DiskNumber"
-
-    # Remove Windows drive letter if assigned (Windows can't use ext4)
-    try {
-        $part = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $PartitionNumber -ErrorAction Stop
-        if ($part.DriveLetter) {
-            Remove-PartitionAccessPath -DiskNumber $DiskNumber -PartitionNumber $PartitionNumber `
-                -AccessPath "$($part.DriveLetter):\" -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 1
-        }
-    } catch {}
-
-    # Attach raw device to WSL2
-    Log-Message "Attaching disk to WSL for ext4 formatting..."
-    $result = & wsl --mount $physDrive --partition $PartitionNumber --bare 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Log-Message "Failed to attach disk to WSL: $result" -Error
-        return $false
-    }
-
-    Start-Sleep -Seconds 3
-
-    # Find the block device exposed by WSL --mount --bare
-    $devPath = (& wsl -u root bash -c "lsblk -rno PATH,TYPE 2>/dev/null | grep 'part' | tail -1 | awk '{print `$1}'" 2>&1).Trim()
-    $devPath = $devPath -replace "`0", ""
-
-    if (-not $devPath -or -not $devPath.StartsWith("/dev/")) {
-        Log-Message "Could not find block device in WSL (got: '$devPath')" -Error
-        & wsl --unmount $physDrive 2>$null
-        return $false
-    }
-
-    Log-Message "Block device in WSL: $devPath"
-
-    # Format as ext4
-    Log-Message "Formatting as ext4 via WSL (label: $Label)..."
-    Set-Status "Formatting boot partition ext4 via WSL..."
-    $result = & wsl -u root mkfs.ext4 -F -L $Label $devPath 2>&1
-    $mkfsExit = $LASTEXITCODE
-
-    # Detach
-    & wsl --unmount $physDrive 2>$null
-    Start-Sleep -Seconds 1
-
-    if ($mkfsExit -ne 0) {
-        Log-Message "mkfs.ext4 failed: $result" -Error
-        return $false
-    }
-
-    Log-Message "ext4 filesystem created successfully."
-    return $true
-}
-
-function Mount-Ext4PartitionWsl {
-    param(
-        [int]$DiskNumber,
-        [int]$PartitionNumber
-    )
-
-    $physDrive = "\\.\PHYSICALDRIVE$DiskNumber"
-
-    Log-Message "Mounting ext4 partition via WSL..."
-    Set-Status "Mounting ext4 partition via WSL..."
-    $result = & wsl --mount $physDrive --partition $PartitionNumber --type ext4 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Log-Message "Failed to mount ext4 via WSL: $result" -Error
-        return $null
-    }
-
-    Start-Sleep -Seconds 3
-
-    # Find mount point
-    $mountPoint = (& wsl -u root bash -c "findmnt -rno TARGET -t ext4 2>/dev/null | tail -1" 2>&1).Trim()
-    $mountPoint = $mountPoint -replace "`0", ""
-
-    if (-not $mountPoint) {
-        Log-Message "Could not determine WSL mount point" -Error
-        & wsl --unmount $physDrive 2>$null
-        return $null
-    }
-
-    # Get default WSL distro name
-    $wslDistro = Get-WslDefaultDistro
-    if (-not $wslDistro) {
-        Log-Message "Could not determine default WSL distribution" -Error
-        & wsl --unmount $physDrive 2>$null
-        return $null
-    }
-
-    $wslWinPath = "\\wsl.localhost\$wslDistro$mountPoint"
-
-    Log-Message "WSL mount point: $mountPoint"
-    Log-Message "Windows UNC path: $wslWinPath"
-
-    return @{
-        WslPath   = $mountPoint
-        WinPath   = $wslWinPath
-        PhysDrive = $physDrive
-    }
-}
-
-function Dismount-Ext4PartitionWsl {
-    param([string]$PhysDrive)
-
-    if ($PhysDrive) {
-        & wsl --unmount $PhysDrive 2>$null
-        Log-Message "ext4 partition unmounted from WSL."
-    }
-}
-
-function Get-SelectedDistro {
-    if ($customRadio.Checked) {
-        $isoSource = if ($script:CustomIsoPath) { $script:CustomIsoPath } else { $script:IsoPath }
-        if (-not $isoSource) {
-            return $null
-        }
-        return @{
-            Name        = [System.IO.Path]::GetFileNameWithoutExtension($isoSource)
-            IsoFilename = [System.IO.Path]::GetFileName($isoSource)
-            Custom      = $true
-        }
-    }
-    else {
-        $idx = $distroCombo.SelectedIndex
-        if ($idx -ge 0 -and $idx -lt $script:DistroKeys.Count) {
-            return $script:Distros[$script:DistroKeys[$idx]]
-        }
-    }
-    return $script:Distros["mint"]
-}
-
 function Get-PartitionLabel {
     param($Part)
     if ($Part.DriveLetter -eq 'C') {
@@ -607,7 +22,6 @@ function Get-PartitionLabel {
         return "Partition            "
     }
 }
-
 function Format-AfterLayout {
     param(
         [array]$Partitions,
@@ -621,7 +35,8 @@ function Format-AfterLayout {
         [double]$RemainingFreeGB = 0,
         [switch]$ShowUnchanged,
         [switch]$NoChanges,
-        [switch]$UseRefind
+        [switch]$UseRefind,
+        [string]$BootPartFsType = "FAT32"
     )
     $lines = @()
     foreach ($part in $Partitions) {
@@ -630,7 +45,7 @@ function Format-AfterLayout {
         if ($ShrinkLetter -and $part.DriveLetter -eq $ShrinkLetter) {
             $label = Get-PartitionLabel -Part $part
             $lines += "  $label $NewShrinkSizeGB GB  (shrunk)"
-            $lines += "  [Unallocated - Linux]  $LinuxSizeGB GB  <-- for Linux installer"
+            $lines += "  [Unallocated - Linux]  $LinuxSizeGB GB  <-- Linux Storage after install"
             if (-not $ShrinkLinuxOnly) {
                 $lines += "  LINUX_LIVE ($bootPartFsType)     $BootPartSizeGB GB  <-- $DistroName live boot"
             }
@@ -649,7 +64,7 @@ function Format-AfterLayout {
 
     if ($AppendLinuxAndBoot) {
         if ($RemainingFreeGB -gt 0) {
-            $lines += "  [Unallocated - Linux]  $RemainingFreeGB GB  <-- for Linux installer"
+            $lines += "  [Unallocated - Linux]  $RemainingFreeGB GB  <-- Linux Storage after install"
         }
         $lines += "  LINUX_LIVE ($bootPartFsType)     $BootPartSizeGB GB  <-- $DistroName live boot"
         if ($UseRefind) {
@@ -664,17 +79,59 @@ function Format-AfterLayout {
 
     return $lines
 }
-
 function Shrink-Partition {
     param(
         [string]$DriveLetter,
         [double]$ShrinkAmountGB
     )
+
+    # ── BitLocker check ──────────────────────────────────────────────────────
+    try {
+        $bitlockerStatus = & manage-bde -status "$DriveLetter`:" 2>&1 | Out-String
+        if ($bitlockerStatus -match "Conversion Status:\s*Encrypted|Conversion Status:\s*Fully Encrypted") {
+            Log-Message "ERROR: ${DriveLetter}: is encrypted with BitLocker!" -Error
+            Log-Message "Shrinking an encrypted partition can cause data loss." -Error
+            Log-Message "Please suspend or disable BitLocker before continuing." -Error
+            [System.Windows.Forms.MessageBox]::Show(
+                "${DriveLetter}: is encrypted with BitLocker.`n`n" +
+                "Shrinking an encrypted partition can cause data corruption.`n`n" +
+                "Please suspend BitLocker protection for this drive first:`n" +
+                "  manage-bde -protectors -disable ${DriveLetter}:`n`n" +
+                "Then retry the installation.",
+                "BitLocker Detected",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+            return $false
+        }
+    } catch {
+        Log-Message "Warning: Could not check BitLocker status: $_"
+    }
+
     try {
         $currentSize = (Get-Partition -DriveLetter $DriveLetter).Size
         $newSize = $currentSize - ($ShrinkAmountGB * 1GB)
         Resize-Partition -DriveLetter $DriveLetter -Size $newSize -ErrorAction Stop
         Log-Message "${DriveLetter}: partition shrunk successfully!"
+
+        # ── Wait for filesystem to settle ────────────────────────────────────
+        # Windows may still be finalizing filesystem metadata after shrink.
+        # Poll until the partition reports stable size.
+        $settled = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            try {
+                $currentPart = Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop
+                if ($currentPart.Size -le $newSize + 1MB) {
+                    $settled = $true
+                    break
+                }
+            } catch {}
+        }
+        if (-not $settled) {
+            Log-Message "Warning: Partition size did not stabilize after 30s" -Error
+        }
+
         return $true
     }
     catch {
@@ -693,6 +150,9 @@ exit
 
         if ($result -match "successfully") {
             Log-Message "${DriveLetter}: partition shrunk successfully!"
+
+            # Wait for filesystem to settle after diskpart shrink
+            Start-Sleep -Seconds 10
             return $true
         } else {
             $hint = if ($DriveLetter -eq 'C') {
@@ -706,7 +166,6 @@ exit
         }
     }
 }
-
 function New-UefiBootEntry {
     param(
         [string]$DistroName,
@@ -751,20 +210,15 @@ function New-UefiBootEntry {
     }
     return $bootCreated
 }
-
 function Set-UILocked {
     param([bool]$Locked)
     $enabled = -not $Locked
-    $startButton.Enabled = $enabled
+    $downloadButton.Enabled = $enabled -and -not $customRadio.Checked
+    $prepareButton.Enabled = $enabled -and $script:IsoDownloaded
     $exitButton.Enabled = $enabled
-    $deleteIsoCheck.Enabled = $enabled
-    $autoRestartCheck.Enabled = $enabled
-    $customRadio.Enabled = $enabled
-    $browseButton.Enabled = $enabled
     $distroCombo.Enabled = $enabled
-    $refindCheck.Enabled = $enabled
+    $browseButton.Enabled = $enabled -and $customRadio.Checked
 }
-
 function Update-DiskInfo {
     try {
         $cDrive = Get-Partition -DriveLetter C -ErrorAction Stop | Select-Object -First 1
@@ -777,14 +231,12 @@ function Update-DiskInfo {
             (Get-Partition -DiskNumber $cDrive.DiskNumber | Where-Object { $_.DriveLetter -eq 'C' }).PartitionNumber
         }
 
-        $diskInfo = @"
-C: Drive Information:
-Total Size: $([math]::Round($volume.Size / 1GB, 2)) GB
-Free Space: $([math]::Round($volume.SizeRemaining / 1GB, 2)) GB
-File System: $($volume.FileSystem)
-Disk Number: $($cDrive.DiskNumber)
-Partition Number: $partitionNumber
-"@
+        $diskInfo = "C: Drive Information  |  " +
+            "Total Size: $([math]::Round($volume.Size / 1GB, 2)) GB  |  " +
+            "Free Space: $([math]::Round($volume.SizeRemaining / 1GB, 2)) GB  |  " +
+            "File System: $($volume.FileSystem)  |  " +
+            "Disk Number: $($cDrive.DiskNumber)  |  " +
+            "Partition Number: $partitionNumber"
 
         $diskInfoText.Text = $diskInfo
 
@@ -803,10 +255,6 @@ Partition Number: $partitionNumber
         $diskInfoText.Text = "Error retrieving disk information"
     }
 }
-
-# ============================================================
-# DISK PLAN DIALOG
-# ============================================================
 function Get-DiskLayoutText {
     param(
         [int]$DiskNumber
@@ -855,7 +303,6 @@ function Get-DiskLayoutText {
 
     return $lines
 }
-
 function Get-DiskUnallocatedGB {
     param(
         [int]$DiskNumber,
@@ -883,1070 +330,34 @@ function Get-DiskUnallocatedGB {
 
     return [math]::Round($total / 1GB, 2)
 }
-
-function Show-DiskPlan {
+function Get-PartitionFresh {
     param(
-        [string]$DistroName
+        [Parameter(Mandatory)][int]$DiskNumber,
+        [int]$PartitionNumber = 0,
+        [string]$DriveLetter = ""
     )
-
-    $bootPartSizeGB = Get-BootPartSizeGB     # 7 GB (FAT32) or 12 GB (ext4)
-    $bootPartFsType = Get-BootPartFsType     # "FAT32" or "ext4"
-
-    # ---- Enumerate all suitable disks ----
-    $allDisks = Get-Disk | Where-Object {
-        $_.OperationalStatus -eq 'Online' -and $_.Size -gt 10GB
-    } | Sort-Object Number
-
-    $cDiskNumber = $script:CDriveInfo.DiskNumber
-
-    # Build dropdown items: C: disk first, then others
-    $diskItems = @()
-    foreach ($d in $allDisks) {
-        $dSizeGB = [math]::Round($d.Size / 1GB, 1)
-        $dFreeGB = Get-DiskUnallocatedGB -DiskNumber $d.Number
-        $busType = if ($d.BusType) { $d.BusType } else { "Unknown" }
-        $model = if ($d.Model) { $d.Model.Trim() } else { "Disk" }
-
-        $letters = (Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue |
-            Where-Object { $_.DriveLetter } |
-            ForEach-Object { "$($_.DriveLetter):" }) -join ", "
-        $letterInfo = if ($letters) { " [$letters]" } else { "" }
-
-        $isCDisk = ($d.Number -eq $cDiskNumber)
-        $prefix = if ($isCDisk) { "Disk $($d.Number) (Windows)" } else { "Disk $($d.Number)" }
-
-        $diskItems += [PSCustomObject]@{
-            Number = $d.Number
-            Label = "$prefix - $model - $dSizeGB GB ($busType)$letterInfo - Free: $dFreeGB GB"
-            IsCDisk = $isCDisk
-            TotalGB = $dSizeGB
-            FreeGB = $dFreeGB
-        }
-    }
-
-    # ---- Build the dialog ----
-    $planForm = New-Object System.Windows.Forms.Form
-    $planForm.Text = "Disk Plan - Review Before Proceeding"
-    $planForm.Size = New-Object System.Drawing.Size(720, 780)
-    $planForm.StartPosition = "CenterParent"
-    $planForm.FormBorderStyle = "Sizable"
-    $planForm.MinimumSize = New-Object System.Drawing.Size(720, 480)
-    $planForm.MaximizeBox = $true
-    $planForm.MinimizeBox = $false
-    $planForm.AutoScroll = $true
-
-    $planFont = New-Object System.Drawing.Font("Segoe UI", 9)
-    $planBoldFont = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $planHeaderFont = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-    $planMonoFont = New-Object System.Drawing.Font("Consolas", 9)
-
-    $yPos = 12
-
-    # Title
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Review Disk Changes for $DistroName"
-    $titleLabel.Font = $planHeaderFont
-    $titleLabel.Location = New-Object System.Drawing.Point(16, $yPos)
-    $titleLabel.Size = New-Object System.Drawing.Size(670, 26)
-    $planForm.Controls.Add($titleLabel)
-    $yPos += 32
-
-    # Warning banner
-    $warningPanel = New-Object System.Windows.Forms.Panel
-    $warningPanel.Location = New-Object System.Drawing.Point(16, $yPos)
-    $warningPanel.Size = New-Object System.Drawing.Size(670, 42)
-    $warningPanel.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 220)
-    $warningPanel.BorderStyle = "FixedSingle"
-    $planForm.Controls.Add($warningPanel)
-
-    $warningLabel = New-Object System.Windows.Forms.Label
-    $warningLabel.Text = [char]0x26A0 + "  These changes modify your disk's partition table. Some options (like wipe and reformat) will DESTROY ALL DATA on the target disk. Make sure you have a backup of important files before proceeding."
-    $warningLabel.Font = $planFont
-    $warningLabel.Location = New-Object System.Drawing.Point(8, 4)
-    $warningLabel.Size = New-Object System.Drawing.Size(650, 34)
-    $warningPanel.Controls.Add($warningLabel)
-    $yPos += 52
-
-    # ---- TARGET DISK SELECTOR ----
-    $diskSelectGroup = New-Object System.Windows.Forms.GroupBox
-    $diskSelectGroup.Text = "Target Disk"
-    $diskSelectGroup.Font = $planBoldFont
-    $diskSelectGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $diskSelectGroup.Size = New-Object System.Drawing.Size(670, 56)
-    $planForm.Controls.Add($diskSelectGroup)
-
-    $diskCombo = New-Object System.Windows.Forms.ComboBox
-    $diskCombo.Font = $planFont
-    $diskCombo.DropDownStyle = "DropDownList"
-    $diskCombo.Location = New-Object System.Drawing.Point(10, 22)
-    $diskCombo.Size = New-Object System.Drawing.Size(648, 24)
-    $diskSelectGroup.Controls.Add($diskCombo)
-
-    foreach ($item in $diskItems) {
-        $diskCombo.Items.Add($item.Label) | Out-Null
-    }
-    $cIndex = 0
-    for ($i = 0; $i -lt $diskItems.Count; $i++) {
-        if ($diskItems[$i].IsCDisk) { $cIndex = $i; break }
-    }
-    $diskCombo.SelectedIndex = $cIndex
-    $yPos += 66
-
-    # ---- LINUX PARTITION SIZE ----
-    $sizeGroup = New-Object System.Windows.Forms.GroupBox
-    $sizeGroup.Text = "Linux Partition Size"
-    $sizeGroup.Font = $planBoldFont
-    $sizeGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $sizeGroup.Size = New-Object System.Drawing.Size(670, 56)
-    $planForm.Controls.Add($sizeGroup)
-
-    $sizeLabel = New-Object System.Windows.Forms.Label
-    $sizeLabel.Text = "Size for Linux (GB):"
-    $sizeLabel.Font = $planFont
-    $sizeLabel.Location = New-Object System.Drawing.Point(10, 24)
-    $sizeLabel.Size = New-Object System.Drawing.Size(130, 20)
-    $sizeGroup.Controls.Add($sizeLabel)
-
-    $sizeNumeric = New-Object System.Windows.Forms.NumericUpDown
-    $sizeNumeric.Font = $planFont
-    $sizeNumeric.Location = New-Object System.Drawing.Point(145, 22)
-    $sizeNumeric.Size = New-Object System.Drawing.Size(80, 24)
-    $sizeNumeric.Minimum = $script:MinLinuxSizeGB
-    $sizeNumeric.Maximum = if ($script:MaxAvailableGB -gt $script:MinLinuxSizeGB) { $script:MaxAvailableGB } else { 10000 }
-    $sizeNumeric.Value = 30
-    $sizeGroup.Controls.Add($sizeNumeric)
-
-    $sizeHelpLabel = New-Object System.Windows.Forms.Label
-    $sizeHelpLabel.Text = "Minimum: 20 GB, Recommended: 100+ GB"
-    $sizeHelpLabel.Font = $planFont
-    $sizeHelpLabel.Location = New-Object System.Drawing.Point(240, 24)
-    $sizeHelpLabel.Size = New-Object System.Drawing.Size(400, 20)
-    $sizeGroup.Controls.Add($sizeHelpLabel)
-    $yPos += 66
-
-    # ---- CURRENT LAYOUT ----
-    $currentGroup = New-Object System.Windows.Forms.GroupBox
-    $currentGroup.Text = "Current Disk Layout"
-    $currentGroup.Font = $planBoldFont
-    $currentGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $currentGroup.Size = New-Object System.Drawing.Size(670, 150)
-    $planForm.Controls.Add($currentGroup)
-
-    $currentText = New-Object System.Windows.Forms.TextBox
-    $currentText.Multiline = $true
-    $currentText.ReadOnly = $true
-    $currentText.ScrollBars = "Vertical"
-    $currentText.Font = $planMonoFont
-    $currentText.Location = New-Object System.Drawing.Point(10, 20)
-    $currentText.Size = New-Object System.Drawing.Size(648, 120)
-    $currentText.BackColor = [System.Drawing.Color]::White
-    $currentGroup.Controls.Add($currentText)
-    $yPos += 160
-
-    # ---- STRATEGY SELECTION ----
-    $strategyGroup = New-Object System.Windows.Forms.GroupBox
-    $strategyGroup.Text = "Installation Strategy"
-    $strategyGroup.Font = $planBoldFont
-    $strategyGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $strategyGroup.Size = New-Object System.Drawing.Size(670, 104)
-    $planForm.Controls.Add($strategyGroup)
-
-    $stratPanel = New-Object System.Windows.Forms.Panel
-    $stratPanel.Location = New-Object System.Drawing.Point(10, 18)
-    $stratPanel.Size = New-Object System.Drawing.Size(648, 80)
-    $strategyGroup.Controls.Add($stratPanel)
-
-    $radioShrink = New-Object System.Windows.Forms.RadioButton
-    $radioShrink.Font = $planFont
-    $radioShrink.Location = New-Object System.Drawing.Point(0, 0)
-    $radioShrink.Size = New-Object System.Drawing.Size(640, 20)
-    $radioShrink.Checked = $true
-    $stratPanel.Controls.Add($radioShrink)
-
-    $radioFreeAll = New-Object System.Windows.Forms.RadioButton
-    $radioFreeAll.Font = $planFont
-    $radioFreeAll.Location = New-Object System.Drawing.Point(0, 24)
-    $radioFreeAll.Size = New-Object System.Drawing.Size(640, 20)
-    $stratPanel.Controls.Add($radioFreeAll)
-
-    $radioWipe = New-Object System.Windows.Forms.RadioButton
-    $radioWipe.Font = $planFont
-    $radioWipe.ForeColor = [System.Drawing.Color]::DarkRed
-    $radioWipe.Location = New-Object System.Drawing.Point(0, 48)
-    $radioWipe.Size = New-Object System.Drawing.Size(640, 20)
-    $radioWipe.Visible = $false
-    $stratPanel.Controls.Add($radioWipe)
-    $yPos += 112
-
-    # ---- PLANNED CHANGES ----
-    $changesGroup = New-Object System.Windows.Forms.GroupBox
-    $changesGroup.Text = "Planned Changes"
-    $changesGroup.Font = $planBoldFont
-    $changesGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $changesGroup.Size = New-Object System.Drawing.Size(670, 100)
-    $planForm.Controls.Add($changesGroup)
-
-    $changesText = New-Object System.Windows.Forms.TextBox
-    $changesText.Multiline = $true
-    $changesText.ReadOnly = $true
-    $changesText.Font = $planMonoFont
-    $changesText.Location = New-Object System.Drawing.Point(10, 20)
-    $changesText.Size = New-Object System.Drawing.Size(648, 70)
-    $changesText.BackColor = [System.Drawing.Color]::White
-    $changesGroup.Controls.Add($changesText)
-    $yPos += 110
-
-    # ---- AFTER LAYOUT ----
-    $afterGroup = New-Object System.Windows.Forms.GroupBox
-    $afterGroup.Text = "Disk Layout After Changes"
-    $afterGroup.Font = $planBoldFont
-    $afterGroup.Location = New-Object System.Drawing.Point(16, $yPos)
-    $afterGroup.Size = New-Object System.Drawing.Size(670, 130)
-    $planForm.Controls.Add($afterGroup)
-
-    $afterText = New-Object System.Windows.Forms.TextBox
-    $afterText.Multiline = $true
-    $afterText.ReadOnly = $true
-    $afterText.ScrollBars = "Vertical"
-    $afterText.Font = $planMonoFont
-    $afterText.Location = New-Object System.Drawing.Point(10, 20)
-    $afterText.Size = New-Object System.Drawing.Size(648, 100)
-    $afterText.BackColor = [System.Drawing.Color]::White
-    $afterGroup.Controls.Add($afterText)
-    $yPos += 140
-
-    # Track selected disk number and shrink info
-    $script:DiskPlanStrategy = "shrink_all"
-    $script:DiskPlanTargetDisk = $cDiskNumber
-    $script:DiskPlanShrinkLetter = $null
-    $script:DiskPlanShrinkAmount = 0
-
-    # ---- Master update function ----
-    $updateAll = {
-        $selIndex = $diskCombo.SelectedIndex
-        if ($selIndex -lt 0) { return }
-        $selDisk = $diskItems[$selIndex]
-        $selDiskNum = $selDisk.Number
-        $isTargetCDisk = $selDisk.IsCDisk
-
-        $LinuxSizeGB = [int]$sizeNumeric.Value
-        $useRefind = $refindCheck.Checked
-        $refindGB = if ($useRefind) { 0.1 } else { 0 }
-        $totalNeededGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
-
-        $script:DiskPlanTargetDisk = $selDiskNum
-
-        # Update current layout text
-        $layoutLines = Get-DiskLayoutText -DiskNumber $selDiskNum
-        $diskObj = Get-Disk -Number $selDiskNum
-        $dTotalGB = [math]::Round($diskObj.Size / 1GB, 2)
-        $currentGroup.Text = "Current Disk Layout  (Disk $selDiskNum - $dTotalGB GB)"
-
-        $totalFreeGB = Get-DiskUnallocatedGB -DiskNumber $selDiskNum
-        if ($totalFreeGB -gt 0.01) {
-            $layoutLines += ""
-            $layoutLines += "  Total unallocated space: $totalFreeGB GB"
-        }
-        $currentText.Text = ($layoutLines -join "`r`n")
-
-        if ($isTargetCDisk) {
-            # ---- C: disk strategies ----
-            $radioWipe.Visible = $false
-            $radioWipe.Checked = $false
-            $cPartition = Get-Partition -DriveLetter C
-            $cSizeGB = [math]::Round($cPartition.Size / 1GB, 2)
-            $cFreeGB = $script:CDriveInfo.FreeGB
-            $cPartitionEnd = $cPartition.Offset + $cPartition.Size
-            $usableFreeGB = Get-DiskUnallocatedGB -DiskNumber $selDiskNum -AfterOffset $cPartitionEnd
-
-            $canFreeAll = ($usableFreeGB -ge ($totalNeededGB + 1))
-            $canFreeBoot = ($usableFreeGB -ge ($bootPartSizeGB + $refindGB + 1))
-
-            $refindNote = if ($useRefind) { " + rEFInd (0.1 GB)" } else { "" }
-            $radioShrink.Text = "Shrink C: by $totalNeededGB GB for Linux ($LinuxSizeGB GB) + boot ($bootPartSizeGB GB)$refindNote"
-            $radioShrink.Visible = $true
-            $radioShrink.Enabled = $true
-
-            if ($canFreeAll) {
-                $radioFreeAll.Text = "Use existing unallocated space ($([math]::Round($usableFreeGB, 1)) GB available) - no shrink needed"
-                $radioFreeAll.Visible = $true
-                $radioFreeAll.Enabled = $true
-            } elseif ($canFreeBoot) {
-                $radioFreeAll.Text = "Use existing free space for $bootPartSizeGB GB boot partition, shrink C: by $LinuxSizeGB GB for Linux only"
-                $radioFreeAll.Visible = $true
-                $radioFreeAll.Enabled = $true
-            } else {
-                $radioFreeAll.Visible = $false
-                $radioFreeAll.Checked = $false
-                if (-not $radioShrink.Checked) { $radioShrink.Checked = $true }
-            }
-
-            $strategyGroup.Visible = $true
-
-            $strategy = "shrink_all"
-            if ($radioFreeAll.Visible -and $radioFreeAll.Checked) {
-                if ($canFreeAll) { $strategy = "use_free_all" }
-                elseif ($canFreeBoot) { $strategy = "use_free_boot" }
-            }
-            $script:DiskPlanStrategy = $strategy
-
-            $changeLines = @()
-            $afterLines = @()
-            $partitions = Get-Partition -DiskNumber $selDiskNum | Sort-Object Offset
-
-            # Always resolve the selected distro first
-            $distro = Get-SelectedDistro
-            $distroName = if ($customRadio.Checked -and $script:CustomIsoPath) {
-                [System.IO.Path]::GetFileNameWithoutExtension($script:CustomIsoPath)
-            } elseif ($distro -and $distro.Name) {
-                $distro.Name
-            } else {
-                $DistroName
-            }
-            switch ($strategy) {
-                "shrink_all" {
-                    $newCSizeGB = [math]::Round($cSizeGB - $totalNeededGB, 2)
-                    $step = 1
-                    $changeLines += "  $step. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$totalNeededGB GB)"
-                    $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) with $distroName files"
-                    if ($useRefind) {
-                        $step++
-                        $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                    }
-                    $step++
-                    $changeLines += "  $step. Leave $LinuxSizeGB GB unallocated for Linux installation"
-                    $step++
-                    if ($useRefind) {
-                        $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                    } else {
-                        $changeLines += "  $step. Configure UEFI boot entry for $distroName"
-                    }
-
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
-                        -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB `
-                        -ShrinkLetter 'C' -NewShrinkSizeGB $newCSizeGB -UseRefind:$useRefind
-                }
-                "use_free_all" {
-                    $step = 1
-                    $changeLines += "  $step. C: partition is NOT modified (stays at $cSizeGB GB)"
-                    $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) in existing free space"
-                    if ($useRefind) {
-                        $step++
-                        $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                    }
-                    $step++
-                    $remainFreeGB = [math]::Round($usableFreeGB - $bootPartSizeGB - $refindGB, 1)
-                    $changeLines += "  $step. Remaining ~$remainFreeGB GB stays unallocated for Linux"
-                    $step++
-                    if ($useRefind) {
-                        $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                    } else {
-                        $changeLines += "  $step. Configure UEFI boot entry for $distroName"
-                    }
-
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
-                        -BootPartSizeGB $bootPartSizeGB -ShowUnchanged -AppendLinuxAndBoot `
-                        -RemainingFreeGB $remainFreeGB -UseRefind:$useRefind
-                }
-                "use_free_boot" {
-                    $newCSizeGB = [math]::Round($cSizeGB - $LinuxSizeGB, 2)
-                    $step = 1
-                    $changeLines += "  $step. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$LinuxSizeGB GB)"
-                    $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) in existing free space"
-                    if ($useRefind) {
-                        $step++
-                        $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                    }
-                    $step++
-                    $changeLines += "  $step. Leave $LinuxSizeGB GB (from C: shrink) unallocated for Linux"
-                    $step++
-                    if ($useRefind) {
-                        $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                    } else {
-                        $changeLines += "  $step. Configure UEFI boot entry for $distroName"
-                    }
-
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $distroName `
-                        -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB `
-                        -ShrinkLetter 'C' -NewShrinkSizeGB $newCSizeGB -ShrinkLinuxOnly
-                    $afterLines += "  LINUX_LIVE ($bootPartFsType)     $bootPartSizeGB GB  <-- $distroName live boot"
-                    if ($useRefind) {
-                        $afterLines += "  REFIND (FAT32)         0.1 GB  <-- rEFInd boot manager"
-                    }
-                }
-            }
-
-            $changesText.Text = ($changeLines -join "`r`n")
-            $afterText.Text = ($afterLines -join "`r`n")
-
-        } else {
-            # ---- Other disk ----
-            $shrinkablePartitions = @()
-            $partitions = Get-Partition -DiskNumber $selDiskNum -ErrorAction SilentlyContinue | Sort-Object Offset
-            if ($partitions) {
-                foreach ($part in $partitions) {
-                    if ($part.DriveLetter) {
-                        try {
-                            $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
-                            if ($vol.FileSystem -eq "NTFS" -and $vol.SizeRemaining -gt ($totalNeededGB * 1GB)) {
-                                $shrinkablePartitions += [PSCustomObject]@{
-                                    DriveLetter = $part.DriveLetter
-                                    SizeGB = [math]::Round($part.Size / 1GB, 2)
-                                    FreeGB = [math]::Round($vol.SizeRemaining / 1GB, 2)
-                                    PartitionNumber = $part.PartitionNumber
-                                }
-                            }
-                        } catch {}
-                    }
-                }
-            }
-
-            $diskFreeGB = $selDisk.FreeGB
-            $hasFreeSpace = ($diskFreeGB -ge ($bootPartSizeGB + $refindGB + 1))
-            $hasShrinkable = ($shrinkablePartitions.Count -gt 0)
-
-            $nonNtfsPartitions = @()
-            if ($partitions) {
-                foreach ($part in $partitions) {
-                    if ($part.DriveLetter) {
-                        try {
-                            $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
-                            if ($vol.FileSystem -ne "NTFS" -and $vol.FileSystem) {
-                                $nonNtfsPartitions += [PSCustomObject]@{
-                                    DriveLetter = $part.DriveLetter
-                                    FileSystem = $vol.FileSystem
-                                    SizeGB = [math]::Round($part.Size / 1GB, 2)
-                                }
-                            }
-                        } catch {}
-                    }
-                }
-            }
-
-            # Configure radio buttons for other-drive strategies
-            if ($hasFreeSpace) {
-                $radioShrink.Text = "Use existing unallocated space ($([math]::Round($diskFreeGB, 1)) GB) on Disk $selDiskNum"
-                $radioShrink.Visible = $true
-                $radioShrink.Enabled = $true
-                if (-not $radioShrink.Checked -and -not $radioFreeAll.Checked -and -not $radioWipe.Checked) {
-                    $radioShrink.Checked = $true
-                }
-            } else {
-                $radioShrink.Visible = $false
-                $radioShrink.Checked = $false
-            }
-
-            if ($hasShrinkable) {
-                $bestShrink = $shrinkablePartitions | Sort-Object FreeGB -Descending | Select-Object -First 1
-                $radioFreeAll.Text = "Shrink $($bestShrink.DriveLetter): ($($bestShrink.SizeGB) GB, $($bestShrink.FreeGB) GB free) on Disk $selDiskNum to make space"
-                $radioFreeAll.Visible = $true
-                $radioFreeAll.Enabled = $true
-                if (-not $hasFreeSpace -and -not $radioWipe.Checked) {
-                    $radioFreeAll.Checked = $true
-                }
-            } else {
-                $radioFreeAll.Visible = $false
-                $radioFreeAll.Checked = $false
-            }
-
-            # Always offer wipe & reformat for non-C: disks if disk is large enough
-            $wipeMinGB = $bootPartSizeGB + $refindGB + 1
-            $diskSizeOK = ($selDisk.TotalGB -ge $wipeMinGB)
-            $radioWipe.Text = [char]0x26A0 + " Wipe & reformat entire disk ($($selDisk.TotalGB) GB) - ALL DATA ON DISK $selDiskNum WILL BE DESTROYED"
-            $radioWipe.Visible = $true
-            $radioWipe.Enabled = $diskSizeOK
-
-            if (-not $hasFreeSpace -and -not $hasShrinkable) {
-                if ($diskSizeOK) {
-                    $radioShrink.Text = "No unallocated space or shrinkable partitions on Disk $selDiskNum"
-                    $radioShrink.Visible = $true
-                    $radioShrink.Enabled = $false
-                    $radioShrink.Checked = $false
-
-                    if ($nonNtfsPartitions.Count -gt 0) {
-                        $fsTypes = ($nonNtfsPartitions | ForEach-Object { "$($_.DriveLetter): ($($_.FileSystem))" }) -join ", "
-                        $radioFreeAll.Text = "Cannot shrink $fsTypes - only NTFS partitions can be resized by Windows"
-                        $radioFreeAll.Visible = $true
-                        $radioFreeAll.Enabled = $false
-                        $radioFreeAll.Checked = $false
-                    }
-
-                    if (-not $radioWipe.Checked) {
-                        $radioWipe.Checked = $true
-                    }
-                } else {
-                    $radioShrink.Text = "No unallocated space or shrinkable partitions on Disk $selDiskNum"
-                    $radioShrink.Visible = $true
-                    $radioShrink.Enabled = $false
-                    $radioShrink.Checked = $false
-                    $radioFreeAll.Visible = $false
-
-                    if ($nonNtfsPartitions.Count -gt 0) {
-                        $fsTypes = ($nonNtfsPartitions | ForEach-Object { "$($_.DriveLetter): ($($_.FileSystem))" }) -join ", "
-                        $radioFreeAll.Text = "Cannot shrink $fsTypes - only NTFS partitions can be resized by Windows"
-                        $radioFreeAll.Visible = $true
-                        $radioFreeAll.Enabled = $false
-                        $radioFreeAll.Checked = $false
-                    }
-                }
-            }
-
-            $strategyGroup.Visible = $true
-
-            $usingWipe = ($radioWipe.Visible -and $radioWipe.Checked)
-
-            if ($usingWipe) {
-                $usingShrink = $false
-            } elseif ($hasShrinkable -and -not $hasFreeSpace -and -not $usingWipe) {
-                $usingShrink = $true
-            } elseif ($hasFreeSpace -and -not $hasShrinkable) {
-                $usingShrink = $false
-            } elseif ($hasFreeSpace -and $hasShrinkable) {
-                $usingShrink = $radioFreeAll.Checked
-            } else {
-                $usingShrink = $false
-            }
-
-            if ($usingWipe) {
-                $script:DiskPlanStrategy = "wipe_disk"
-                $script:DiskPlanShrinkLetter = $null
-                $script:DiskPlanShrinkAmount = 0
-            } elseif ($usingShrink) {
-                $script:DiskPlanStrategy = "other_drive_shrink"
-                $script:DiskPlanShrinkLetter = $bestShrink.DriveLetter
-                $script:DiskPlanShrinkAmount = $totalNeededGB
-            } else {
-                $script:DiskPlanStrategy = "other_drive"
-                $script:DiskPlanShrinkLetter = $null
-                $script:DiskPlanShrinkAmount = 0
-            }
-
-            $changeLines = @()
-            $afterLines = @()
-
-            if ($usingWipe) {
-                $usableGB = [math]::Round($selDisk.TotalGB - $bootPartSizeGB - $refindGB, 1)
-
-                $changeLines += "  ** WARNING: This will ERASE ALL DATA on this disk! **"
-                $changeLines += ""
-                $step = 1
-                $changeLines += "  $step. C: partition is NOT modified (different disk)"
-                $step++
-                $changeLines += "  $step. Wipe Disk $selDiskNum and create a new GPT partition table"
-                $step++
-                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE)"
-                if ($useRefind) {
-                    $step++
-                    $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                }
-                $step++
-                $changeLines += "  $step. Leave ~$usableGB GB unallocated for Linux installation"
-                $step++
-                if ($useRefind) {
-                    $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                } else {
-                    $changeLines += "  $step. Install bootloader to Windows ESP and configure UEFI boot entry for $DistroName"
-                }
-
-                $afterLines += "  LINUX_LIVE ($bootPartFsType)     $bootPartSizeGB GB  <-- $DistroName live boot"
-                if ($useRefind) {
-                    $afterLines += "  REFIND (FAT32)         0.1 GB  <-- rEFInd boot manager"
-                }
-                $afterLines += "  [Unallocated - Linux]  ~$usableGB GB  <-- for Linux installer"
-            } elseif ($usingShrink) {
-                $shrinkTarget = $bestShrink
-                $newPartSizeGB = [math]::Round($shrinkTarget.SizeGB - $totalNeededGB, 2)
-                $step = 1
-                $changeLines += "  $step. C: partition is NOT modified (different disk selected)"
-                $step++
-                $changeLines += "  $step. Shrink $($shrinkTarget.DriveLetter): from $($shrinkTarget.SizeGB) GB to $newPartSizeGB GB  (-$totalNeededGB GB)"
-                $step++
-                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) on Disk $selDiskNum"
-                if ($useRefind) {
-                    $step++
-                    $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                }
-                $step++
-                $changeLines += "  $step. Leave $LinuxSizeGB GB unallocated for Linux installation"
-                $step++
-                if ($useRefind) {
-                    $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                } else {
-                    $changeLines += "  $step. Configure UEFI boot entry for $DistroName"
-                }
-
-                if ($partitions) {
-                    $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
-                        -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB `
-                        -ShrinkLetter $shrinkTarget.DriveLetter -NewShrinkSizeGB $newPartSizeGB -UseRefind:$useRefind
-                }
-            } else {
-                if ($hasFreeSpace) {
-                    $step = 1
-                    $changeLines += "  $step. C: partition is NOT modified (different disk selected)"
-                    $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) on Disk $selDiskNum"
-                    if ($useRefind) {
-                        $step++
-                        $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
-                    }
-                    $step++
-                    $changeLines += "  $step. Remaining unallocated space on Disk $selDiskNum available for Linux"
-                    $step++
-                    if ($useRefind) {
-                        $changeLines += "  $step. Install rEFInd boot manager and configure UEFI boot entry"
-                    } else {
-                        $changeLines += "  $step. Configure UEFI boot entry for $DistroName"
-                    }
-
-                    $remainFreeGB = [math]::Round($diskFreeGB - $bootPartSizeGB - $refindGB, 1)
-                    if ($partitions) {
-                        $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
-                            -BootPartSizeGB $bootPartSizeGB -ShowUnchanged -AppendLinuxAndBoot `
-                            -RemainingFreeGB $remainFreeGB -UseRefind:$useRefind
-                    }
-                } else {
-                    $changeLines += "  Cannot proceed with this disk."
-                    $changeLines += ""
-                    if ($nonNtfsPartitions.Count -gt 0) {
-                        foreach ($nfp in $nonNtfsPartitions) {
-                            $changeLines += "  $($nfp.DriveLetter): is $($nfp.FileSystem) ($($nfp.SizeGB) GB) - cannot be shrunk by Windows."
-                        }
-                        $changeLines += ""
-                        $changeLines += "  To use this disk, you would need to:"
-                        $changeLines += "    - Back up your data from the drive"
-                        $changeLines += "    - Shrink or delete the partition using Disk Management"
-                        $changeLines += "    - Re-run ULLI (it will detect the free space)"
-                    } else {
-                        $changeLines += "  No unallocated space available on this disk."
-                    }
-
-                    if ($partitions) {
-                        $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
-                            -BootPartSizeGB $bootPartSizeGB -NoChanges
-                    }
-                }
-            }
-
-            $changesText.Text = ($changeLines -join "`r`n")
-            $afterText.Text = ($afterLines -join "`r`n")
-        }
-    }
-
-    # Wire events
-    $diskCombo.Add_SelectedIndexChanged({
-        $radioShrink.Checked = $true
-        & $updateAll
-    })
-    $sizeNumeric.Add_ValueChanged({ & $updateAll })
-    $radioShrink.Add_CheckedChanged({ & $updateAll })
-    $radioFreeAll.Add_CheckedChanged({ & $updateAll })
-    $radioWipe.Add_CheckedChanged({ & $updateAll })
-
-    # Initial update
-    & $updateAll
-
-    # ---- BUTTONS ----
-    $confirmButton = New-Object System.Windows.Forms.Button
-    $confirmButton.Text = "Confirm && Proceed"
-    $confirmButton.Font = $planBoldFont
-    $confirmButton.Size = New-Object System.Drawing.Size(160, 38)
-    $confirmButton.Location = New-Object System.Drawing.Point(362, $yPos)
-    $confirmButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
-    $confirmButton.ForeColor = [System.Drawing.Color]::White
-    $confirmButton.FlatStyle = "Flat"
-    $planForm.Controls.Add($confirmButton)
-
-    $cancelPlanButton = New-Object System.Windows.Forms.Button
-    $cancelPlanButton.Text = "Cancel"
-    $cancelPlanButton.Font = $planFont
-    $cancelPlanButton.Size = New-Object System.Drawing.Size(120, 38)
-    $cancelPlanButton.Location = New-Object System.Drawing.Point(532, $yPos)
-    $planForm.Controls.Add($cancelPlanButton)
-
-    $script:DiskPlanApproved = $false
-
-    $confirmButton.Add_Click({
-        $selIndex = $diskCombo.SelectedIndex
-        $selDisk = $diskItems[$selIndex]
-
-        if (-not $selDisk.IsCDisk) {
-            $strat = $script:DiskPlanStrategy
-            if ($strat -eq "other_drive") {
-                $minFreeNeeded = $bootPartSizeGB + $refindGB + 1
-                if ($selDisk.FreeGB -lt $minFreeNeeded) {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Disk $($selDisk.Number) does not have enough unallocated space.`n`n" +
-                        "Need at least $minFreeNeeded GB of free space, but only $($selDisk.FreeGB) GB available.`n`n" +
-                        "Please select a different disk or choose to shrink a partition.",
-                        "Insufficient Space on Target Disk",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Warning
-                    )
-                    return
-                }
-            } elseif ($strat -eq "other_drive_shrink") {
-                $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
-                    "Keep your computer plugged in!`n`n" +
-                    "A partition resize is about to begin. Power loss during this process " +
-                    "could corrupt your partition table.`n`n" +
-                    "Make sure your computer is connected to AC power before continuing.",
-                    "Power Requirement Warning",
-                    [System.Windows.Forms.MessageBoxButtons]::OKCancel,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
-                    return
-                }
-            } elseif ($strat -eq "wipe_disk") {
-                $powerConfirm = [System.Windows.Forms.MessageBox]::Show(
-                    "Keep your computer plugged in!`n`n" +
-                    "A partition resize is about to begin. Power loss during this process " +
-                    "could corrupt your partition table.`n`n" +
-                    "Make sure your computer is connected to AC power before continuing.",
-                    "Power Requirement Warning",
-                    [System.Windows.Forms.MessageBoxButtons]::OKCancel,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                if ($powerConfirm -ne [System.Windows.Forms.DialogResult]::OK) {
-                    return
-                }
-                
-                $wipeConfirm = [System.Windows.Forms.MessageBox]::Show(
-                    "WARNING: You are about to ERASE ALL DATA on Disk $($selDisk.Number)!`n`n" +
-                    "This will:`n" +
-                    "  - Destroy the partition table`n" +
-                    "  - Delete ALL partitions and data`n" +
-                    "  - Create a fresh GPT layout`n`n" +
-                    "This action CANNOT be undone.`n`n" +
-                    "Are you absolutely sure?",
-                    "Confirm Disk Wipe",
-                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                if ($wipeConfirm -ne [System.Windows.Forms.DialogResult]::Yes) {
-                    return
-                }
-            } elseif ($strat -eq "other_drive" -and -not ($selDisk.FreeGB -ge ($bootPartSizeGB + $refindGB + 1))) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "Disk $($selDisk.Number) cannot be used as-is.`n`n" +
-                    "It has no unallocated space and no NTFS partitions that can be shrunk.`n" +
-                    "You may need to shrink or remove a partition manually first.",
-                    "Cannot Use Target Disk",
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                return
-            } else {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "Disk $($selDisk.Number) has no unallocated space and no shrinkable NTFS partitions.`n`n" +
-                    "Please select a different disk.",
-                    "Cannot Use Target Disk",
-                    [System.Windows.Forms.MessageBoxButtons]::OK,
-                    [System.Windows.Forms.MessageBoxIcon]::Warning
-                )
-                return
-            }
-        }
-
-        $script:DiskPlanApproved = $true
-        $planForm.Close()
-    })
-
-    $cancelPlanButton.Add_Click({
-        $script:DiskPlanApproved = $false
-        $planForm.Close()
-    })
-
-    $planScreenH = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
-    $desiredH = $yPos + 52 + ($planForm.Size.Height - $planForm.ClientSize.Height)
-    $cappedH = [Math]::Min($desiredH, $planScreenH - 40)
-    $planForm.ClientSize = New-Object System.Drawing.Size(702, ($yPos + 52))
-    if ($desiredH -gt ($planScreenH - 40)) {
-        $planForm.Size = New-Object System.Drawing.Size($planForm.Size.Width, $cappedH)
-    }
-
-    $planForm.ShowDialog($form)
-
-    return @{
-        Approved = $script:DiskPlanApproved
-        Strategy = $script:DiskPlanStrategy
-        TargetDiskNumber = $script:DiskPlanTargetDisk
-        ShrinkDriveLetter = $script:DiskPlanShrinkLetter
-        ShrinkAmountGB = $script:DiskPlanShrinkAmount
-        LinuxSizeGB = [int]$sizeNumeric.Value
-        UseRefind = $refindCheck.Checked
-        UseExt4Boot = $ext4BootCheck.Checked
-    }
-}
-
-function Verify-ISOChecksum {
-    param(
-        [string]$FilePath
-    )
-
-    Log-Message "Verifying ISO checksum..."
-    Set-Status "Verifying ISO integrity..."
-
+    # Brief pause lets Windows finalize partition metadata
+    Start-Sleep -Milliseconds 500
     try {
-        $distro = Get-SelectedDistro
-        $expectedHash = $distro.Checksum
-        Log-Message "Expected SHA256: $expectedHash"
-
-        Log-Message "Calculating SHA256 checksum of downloaded ISO (this may take a minute)..."
-        $actualHash = (Get-FileHash -Path $FilePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
-        Log-Message "Actual SHA256:   $actualHash"
-
-        if ($actualHash -eq $expectedHash) {
-            Log-Message "[PASS] Checksum verification PASSED - ISO is authentic!"
-            return $true
+        if ($PartitionNumber -gt 0) {
+            return Get-Partition -DiskNumber $DiskNumber -PartitionNumber $PartitionNumber -ErrorAction Stop
+        } elseif ($DriveLetter) {
+            return Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop
         } else {
-            Log-Message "[FAIL] Checksum verification FAILED - ISO may be corrupted or tampered!" -Error
-
-            $response = [System.Windows.Forms.MessageBox]::Show(
-                "The ISO file checksum does not match the expected checksum!`n`n" +
-                "Expected: $expectedHash`n" +
-                "Actual:   $actualHash`n`n" +
-                "This could mean the file is corrupted or has been tampered with.`n" +
-                "Do you want to delete it and re-download?",
-                "Checksum Verification Failed",
-                [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                [System.Windows.Forms.MessageBoxIcon]::Warning
-            )
-
-            if ($response -eq [System.Windows.Forms.DialogResult]::Yes) {
-                try {
-                    Remove-Item $FilePath -Force
-                    Log-Message "Corrupted ISO deleted"
-                } catch {
-                    Log-Message "Error deleting ISO: $_" -Error
-                }
-            }
-
-            return $false
+            return Get-Partition -DiskNumber $DiskNumber -ErrorAction Stop
         }
-    }
-    catch {
-        Log-Message "Error calculating checksum: $_" -Error
-
-        $response = [System.Windows.Forms.MessageBox]::Show(
-            "Unable to verify the ISO checksum. Error: $_`n`n" +
-            "Do you want to continue anyway?",
-            "Checksum Verification Error",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question
-        )
-
-        return ($response -eq [System.Windows.Forms.DialogResult]::Yes)
-    }
-}
-
-function Download-LinuxISO {
-    param(
-        [string]$Destination
-    )
-
-    $distro = Get-SelectedDistro
-    $isoName = $distro.Name
-    $expectedSize = $distro.ExpectedSize
-    $mirrors = $distro.Mirrors
-
-    Log-Message "Downloading $isoName ISO ($expectedSize)..."
-    Log-Message "This may take a while depending on your internet speed..."
-
-    foreach ($i in 0..($mirrors.Count - 1)) {
-        $mirror = $mirrors[$i]
-        Log-Message "Trying mirror $($i + 1)/$($mirrors.Count): $($mirror.Split('/')[2])"
-        Set-Status "Connecting to mirror..."
-
-        try {
-            Add-Type -AssemblyName System.Net.Http
-
-            $httpClient = New-Object System.Net.Http.HttpClient
-            $httpClient.Timeout = [TimeSpan]::FromMinutes(60)
-
-            $response = $httpClient.GetAsync($mirror, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-
-            if ($response.IsSuccessStatusCode) {
-                $totalBytes = $response.Content.Headers.ContentLength
-                $totalMB = [math]::Round($totalBytes / 1MB, 1)
-                Log-Message "File size: $totalMB MB"
-
-                $fileStream = [System.IO.File]::Create($Destination)
-                $downloadStream = $response.Content.ReadAsStreamAsync().Result
-
-                $buffer = New-Object byte[] 81920
-                $totalRead = 0
-                $lastUpdate = [DateTime]::Now
-                $updateInterval = [TimeSpan]::FromMilliseconds(500)
-
-                Set-Status "Downloading..."
-
-                while ($true) {
-                    $bytesRead = $downloadStream.Read($buffer, 0, $buffer.Length)
-
-                    if ($bytesRead -eq 0) {
-                        break
-                    }
-
-                    $fileStream.Write($buffer, 0, $bytesRead)
-                    $totalRead += $bytesRead
-
-                    $now = [DateTime]::Now
-                    if (($now - $lastUpdate) -gt $updateInterval) {
-                        $percent = [int](($totalRead / $totalBytes) * 100)
-                        $mbDownloaded = [math]::Round($totalRead / 1MB, 1)
-
-                        $progressBar.Value = $percent
-                        Set-Status "Downloading: $percent% - $mbDownloaded MB / $totalMB MB"
-
-                        [System.Windows.Forms.Application]::DoEvents()
-                        $lastUpdate = $now
-                    }
-                }
-
-                $fileStream.Close()
-                $downloadStream.Close()
-                $response.Dispose()
-                $httpClient.Dispose()
-
-                $progressBar.Value = 100
-                Set-Status "Download complete!"
-                Start-Sleep -Milliseconds 500
-                $progressBar.Value = 0
-                $statusLabel.Text = ""
-
-                $fileInfo = Get-Item $Destination
-                $fileSizeGB = [math]::Round($fileInfo.Length / 1GB, 2)
-                Log-Message "Downloaded file size: $fileSizeGB GB"
-
-                if ($fileInfo.Length -lt 2GB) {
-                    Log-Message "File size too small, download may be corrupted" -Error
-                    Remove-Item $Destination -Force
-                    continue
-                }
-
-                if (-not (Verify-ISOChecksum -FilePath $Destination)) {
-                    Log-Message "Checksum verification failed, trying next mirror..." -Error
-                    continue
-                }
-
-                return $true
-            } else {
-                throw "HTTP Error: $($response.StatusCode)"
-            }
-        }
-        catch {
-            Log-Message "Download failed: $_" -Error
-
-            if (Test-Path $Destination) {
-                try {
-                    Remove-Item $Destination -Force -ErrorAction SilentlyContinue
-                    Log-Message "Removed incomplete download"
-                } catch {}
-            }
-
-            if ($i -lt $mirrors.Count - 1) {
-                Log-Message "Trying next mirror..."
-            }
-        }
-    }
-
-    # All mirrors failed
-    Log-Message "All automatic download attempts failed" -Error
-
-    $response = [System.Windows.Forms.MessageBox]::Show(
-        "Automatic download failed. Would you like to:`n`n" +
-        "- Download manually from your browser?`n" +
-        "- Place the file at: $Destination`n" +
-        "- Then run the installer again`n`n" +
-        "Click Yes to open the $isoName download page, No to cancel",
-        "Download Failed",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Information
-    )
-
-    if ($response -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Start-Process $distro.DownloadPage
-        Log-Message $distro.DownloadMsg
-        Log-Message $Destination
-        Log-Message "Then run the installer again"
-    }
-
-    return $false
-}
-
-# ============================================================
-# rEFInd DOWNLOAD AND INSTALL
-# ============================================================
-function Download-Refind {
-    $dest = Join-Path $env:TEMP $script:RefindFilename
-    if (Test-Path $dest) {
-        Log-Message "Found cached rEFInd: $dest"
-        return $dest
-    }
-    Log-Message "Downloading rEFInd boot manager..."
-    Set-Status "Downloading rEFInd..."
-    try {
-        Add-Type -AssemblyName System.Net.Http
-        $handler = New-Object System.Net.Http.HttpClientHandler
-        $handler.AllowAutoRedirect = $true
-        $httpClient = New-Object System.Net.Http.HttpClient($handler)
-        $httpClient.Timeout = [TimeSpan]::FromMinutes(10)
-        $httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("windows-installer/1.0")
-
-        $response = $httpClient.GetAsync(
-            $script:RefindUrl,
-            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-        ).Result
-
-        if ($response.IsSuccessStatusCode) {
-            $totalBytes = $response.Content.Headers.ContentLength
-            $fileStream = [System.IO.File]::Create($dest)
-            $downloadStream = $response.Content.ReadAsStreamAsync().Result
-            $buffer = New-Object byte[] 81920
-            $totalRead = [int64]0
-            $lastUpdate = [DateTime]::Now
-
-            while ($true) {
-                $bytesRead = $downloadStream.Read($buffer, 0, $buffer.Length)
-                if ($bytesRead -eq 0) { break }
-                $fileStream.Write($buffer, 0, $bytesRead)
-                $totalRead += $bytesRead
-                $now = [DateTime]::Now
-                if (($now - $lastUpdate).TotalMilliseconds -gt 500) {
-                    if ($totalBytes -gt 0) {
-                        $percent = [int](($totalRead / $totalBytes) * 100)
-                        Set-Status "Downloading rEFInd... $percent%"
-                    }
-                    [System.Windows.Forms.Application]::DoEvents()
-                    $lastUpdate = $now
-                }
-            }
-
-            $fileStream.Close()
-            $downloadStream.Close()
-            $response.Dispose()
-            $httpClient.Dispose()
-
-            $sizeMB = [math]::Round((Get-Item $dest).Length / 1MB, 1)
-            Log-Message "rEFInd downloaded: $sizeMB MB"
-            Set-Status ""
-            return $dest
+    } catch {
+        # Retry once after a longer pause
+        Start-Sleep -Seconds 2
+        if ($PartitionNumber -gt 0) {
+            return Get-Partition -DiskNumber $DiskNumber -PartitionNumber $PartitionNumber -ErrorAction Stop
+        } elseif ($DriveLetter) {
+            return Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop
         } else {
-            throw "HTTP Error: $($response.StatusCode)"
+            return Get-Partition -DiskNumber $DiskNumber -ErrorAction Stop
         }
     }
-    catch {
-        Log-Message "rEFInd download failed: $_" -Error
-        if (Test-Path $dest) { Remove-Item $dest -Force }
-        return $null
-    }
 }
-
 function Install-Refind {
     param(
         [string]$RefindDriveLetter,
@@ -2054,7 +465,7 @@ function Install-Refind {
 
     # Write refind.conf
     Log-Message "Writing rEFInd configuration..."
-    $conf = "# rEFInd configuration - generated by ULLI`n"
+    $conf = "# rEFInd configuration - generated by QuickLinux`n"
     $conf += "timeout 10`n"
     $conf += "use_graphics_for linux`n"
     $conf += "scanfor internal,external,manual`n"
@@ -2108,7 +519,6 @@ function Install-Refind {
     Log-Message "  rEFInd partition: $refindDrive"
     return $true
 }
-
 function New-RefindPartition {
     param(
         [int]$DiskNumber,
@@ -2222,7 +632,6 @@ exit
         return $null
     }
 }
-
 function Start-Installation {
     if ($script:IsRunning) {
         return
@@ -2232,12 +641,76 @@ function Start-Installation {
     $distroName = $distro.Name
 
     # ========================================
+    # PRE-FLIGHT VALIDATION
+    # ========================================
+    $preflightIssues = @()
+
+    # Check GPT partition style on target disks
+    try {
+        $allDisks = Get-Disk -ErrorAction SilentlyContinue
+        foreach ($disk in $allDisks) {
+            if ($disk.PartitionStyle -ne "GPT" -and $disk.BusType -ne "USB") {
+                $preflightIssues += "Disk $($disk.Number) ($([math]::Round($disk.Size/1GB,0)) GB) uses $($disk.PartitionStyle) - only GPT is supported"
+            }
+        }
+    } catch {}
+
+    # Check Secure Boot status (rEFInd may require it disabled on some systems)
+    try {
+        $secureBoot = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+        if ($secureBoot) {
+            Log-Message "Secure Boot is enabled (rEFInd supports Secure Boot, but may need custom keys)"
+        }
+    } catch {
+        Log-Message "Could not determine Secure Boot status"
+    }
+
+    # Check Virtualization (needed for WSL2 if ext4 boot selected)
+    if ($useExt4Boot) {
+        try {
+            $vmMode = (Get-ComputerInfo).HypervisorPresent
+            if (-not $vmMode) {
+                $preflightIssues += "Hardware virtualization not detected - WSL2 (required for ext4 boot) may not work"
+            }
+        } catch {}
+    }
+
+    # Check available disk space on Windows drive
+    try {
+        $cVol = Get-Volume -DriveLetter C -ErrorAction Stop
+        $cFreeGB = [math]::Round($cVol.SizeRemaining / 1GB, 2)
+        if ($cFreeGB -lt 10) {
+            $preflightIssues += "C: drive has only ${cFreeGB} GB free - at least 10 GB recommended for safe shrinking"
+        }
+    } catch {}
+
+    if ($preflightIssues.Count -gt 0) {
+        $issueText = "Pre-flight checks found issues:`n`n"
+        foreach ($issue in $preflightIssues) {
+            $issueText += "• $issue`n"
+        }
+        $issueText += "`nDo you want to continue anyway?"
+
+        $preflightResult = [System.Windows.Forms.MessageBox]::Show(
+            $issueText,
+            "Pre-flight Warnings",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        if ($preflightResult -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Log-Message "Preparation cancelled due to pre-flight warnings."
+            Set-Status "Ready - download an ISO or use a custom one"
+            return
+        }
+    }
+
+    # ========================================
     # SHOW DISK PLAN - user must approve
     # ========================================
     $planResult = Show-DiskPlan -DistroName $distroName
 
     if (-not $planResult.Approved) {
-        Log-Message "Installation cancelled by user at disk plan review."
+        Log-Message "Preparation cancelled by user at disk plan review."
         Set-Status "Ready to install"
         return
     }
@@ -2258,6 +731,36 @@ function Start-Installation {
     $ext4Note = if ($useExt4Boot) { ", ext4 boot: yes" } else { "" }
     $script:WslMountInfo = $null  # track WSL mount for cleanup
     Log-Message "Disk plan approved. Strategy: $selectedStrategy, Target disk: $targetDiskNumber, Linux size: $linuxSizeGB GB$refindNote$ext4Note"
+
+    # ── Re-validate disk state before execution ──────────────────────────────
+    # Disk layout may have changed since the plan was shown (Windows Update,
+    # antivirus, other processes). Re-check to avoid operating on stale data.
+    Log-Message "Re-validating disk state before proceeding..."
+    try {
+        $currentDisk = Get-Disk -Number $targetDiskNumber -ErrorAction Stop
+        $currentPartitions = Get-Partition -DiskNumber $targetDiskNumber -ErrorAction Stop
+        $currentPartitionCount = @($currentPartitions).Count
+        if ($planResult.ExpectedPartitionCount -and $currentPartitionCount -ne $planResult.ExpectedPartitionCount) {
+            Log-Message "WARNING: Disk layout changed since plan was shown!" -Error
+            Log-Message "  Expected: $($planResult.ExpectedPartitionCount) partitions, Found: $currentPartitionCount" -Error
+            $reconfirm = [System.Windows.Forms.MessageBox]::Show(
+                "The disk layout has changed since you reviewed the plan.`n`n" +
+                "Partition count: expected $($planResult.ExpectedPartitionCount), now $currentPartitionCount.`n`n" +
+                "This could be caused by Windows Update or other disk operations.`n`n" +
+                "Do you want to continue anyway?",
+                "Disk Layout Changed",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($reconfirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+                Log-Message "Preparation cancelled due to disk layout change."
+                Set-Status "Ready - download an ISO or use a custom one"
+                return
+            }
+        }
+    } catch {
+        Log-Message "Warning: Could not re-validate disk state: $_"
+    }
 
     # Validate WSL availability if ext4 boot is selected -- auto-install if missing
     if ($useExt4Boot) {
@@ -2287,7 +790,7 @@ function Start-Installation {
                         [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Error
                     )
-                    Set-Status "Ready to install"
+                    Set-Status "Ready - download an ISO or use a custom one"
                     return
                 }
             } else {
@@ -2299,15 +802,15 @@ function Start-Installation {
                     "This will:`n" +
                     "  - Enable the WSL and Virtual Machine Platform features`n" +
                     "  - A system restart will be required`n" +
-                    "  - After restart, re-run ULLI and Ubuntu will be installed automatically`n`n" +
+                    "  - After restart, re-run QuickLinux and Ubuntu will be installed automatically`n`n" +
                     "Note: Virtualization must be enabled in your BIOS/UEFI settings.",
                     "Install WSL?",
                     [System.Windows.Forms.MessageBoxButtons]::YesNo,
                     [System.Windows.Forms.MessageBoxIcon]::Question
                 )
                 if ($installWsl -ne [System.Windows.Forms.DialogResult]::Yes) {
-                    Log-Message "Installation cancelled: WSL is required for ext4 boot." -Error
-                    Set-Status "Ready to install"
+                    Log-Message "Preparation cancelled: WSL is required for ext4 boot." -Error
+                    Set-Status "Ready - download an ISO or use a custom one"
                     return
                 }
 
@@ -2331,7 +834,7 @@ function Start-Installation {
                         Log-Message "A system restart is required for WSL features to activate."
                         $rebootNow = [System.Windows.Forms.MessageBox]::Show(
                             "WSL features have been enabled but require a system restart.`n`n" +
-                            "After restart, re-run ULLI and select ext4 boot again.`n" +
+                            "After restart, re-run QuickLinux and select ext4 boot again.`n" +
                             "Ubuntu will be downloaded and installed automatically.`n`n" +
                             "The computer will restart after you click OK.",
                             "Restart Required",
@@ -2342,7 +845,7 @@ function Start-Installation {
                             Log-Message "Restarting computer for WSL installation..."
                             Restart-Computer -Force
                         }
-                        Set-Status "Ready to install"
+                        Set-Status "Ready - download an ISO or use a custom one"
                         return
                     }
                 }
@@ -2353,12 +856,12 @@ function Start-Installation {
                         "Error: $_`n`n" +
                         "Please install WSL manually by running:`n" +
                         "  wsl --install`n`n" +
-                        "Then restart your computer and re-run ULLI.",
+                        "Then restart your computer and re-run QuickLinux.",
                         "WSL Installation Failed",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
                         [System.Windows.Forms.MessageBoxIcon]::Error
                     )
-                    Set-Status "Ready to install"
+                    Set-Status "Ready - download an ISO or use a custom one"
                     return
                 }
             }
@@ -2483,7 +986,7 @@ function Start-Installation {
                                             return
                                         }
                                     } else {
-                                        Log-Message "Installation cancelled by user" -Error
+                                        Log-Message "Preparation cancelled by user" -Error
                                         return
                                     }
                                 }
@@ -2661,7 +1164,7 @@ exit
             if ($useRefind -and $script:RefindDriveLetter) {
                 Log-Message "  Partition 2: REFIND ($($script:RefindSizeMB) MB, $($script:RefindDriveLetter):)"
             }
-            Log-Message "  Unallocated: ~$unallocGB GB (for Linux installer)"
+            Log-Message "  Unallocated: ~$unallocGB GB (Linux Storage after install)"
             Log-Message ""
         }
         # ── Shrink/free-space strategies ──────────────────────────────────────
@@ -2804,7 +1307,16 @@ exit
             } | Select-Object -First 1
 
             $chosenGap = if ($anchorGap) { $anchorGap }
-                         else { $usableGaps | Sort-Object Size -Descending | Select-Object -First 1 }
+                          else {
+                              # Fallback: pick largest gap AFTER the anchor partition, not anywhere on disk
+                              # This ensures boot partition is placed after Windows/data partitions
+                              $usableGapsAfterAnchor = $usableGaps | Where-Object { $_.Start -ge $anchorEnd }
+                              if ($usableGapsAfterAnchor) {
+                                  $usableGapsAfterAnchor | Sort-Object Size -Descending | Select-Object -First 1
+                              } else {
+                                  throw "No suitable gap found after the anchor partition (end: $([math]::Round($anchorEnd / 1GB, 2)) GB). Cannot safely place boot partition."
+                              }
+                          }
 
             $chosenGapGB = [math]::Round($chosenGap.Size / 1GB, 2)
             $chosenStartGB = [math]::Round($chosenGap.Start / 1GB, 2)
@@ -2919,6 +1431,7 @@ exit
 
                     if ($fillerSize -gt 0) {
                         Log-Message "Attempting workaround: Creating filler partition of $fillerSizeGB GB"
+                        $fillerPartition = $null
 
                         try {
                             $fillerPartition = New-Partition -DiskNumber $targetDiskNumber `
@@ -2951,6 +1464,18 @@ exit
                         }
                         catch {
                             Log-Message "Workaround failed: $_" -Error
+                            # Clean up filler partition if it was created
+                            if ($fillerPartition) {
+                                try {
+                                    Log-Message "Cleaning up orphan filler partition..."
+                                    Remove-Partition -DiskNumber $targetDiskNumber `
+                                        -PartitionNumber $fillerPartition.PartitionNumber `
+                                        -Confirm:$false `
+                                        -ErrorAction SilentlyContinue
+                                } catch {
+                                    Log-Message "Warning: Could not remove filler partition. Manual cleanup may be needed." -Error
+                                }
+                            }
                         }
                     }
                 }
@@ -2974,27 +1499,42 @@ exit
             }
 
             if ($partitionCreated -and -not $driveLetter) {
-                Start-Sleep -Seconds 3
-
+                # ── Poll for drive letter assignment ─────────────────────────
+                # Windows Storage Management API may delay assigning drive letters.
+                # Poll repeatedly instead of relying on a fixed sleep.
+                $driveLetter = $null
                 $targetSize = [int64]($bootPartSizeGB * 1GB)
                 $tolerance = [int64](100MB)
 
-                $newPartitions = Get-Partition -DiskNumber $targetDiskNumber |
-                    Where-Object { [Math]::Abs($_.Size - $targetSize) -lt $tolerance }
+                for ($i = 0; $i -lt 15; $i++) {
+                    Start-Sleep -Seconds 1
+                    # Force fresh query (bypass API cache)
+                    $newPartitions = Get-Partition -DiskNumber $targetDiskNumber |
+                        Where-Object { [Math]::Abs($_.Size - $targetSize) -lt $tolerance }
 
-                $bootPartition = $newPartitions | Sort-Object Offset -Descending | Select-Object -First 1
+                    $bootPartition = $newPartitions | Sort-Object Offset -Descending | Select-Object -First 1
 
-                if ($bootPartition) {
-                    $driveLetter = $bootPartition.DriveLetter
+                    if ($bootPartition -and $bootPartition.DriveLetter) {
+                        $driveLetter = $bootPartition.DriveLetter
+                        Log-Message "Drive letter assigned: ${driveLetter}: (after $($i+1)s)"
+                        break
+                    }
+                }
 
-                    if (-not $driveLetter) {
-                        $bootPartition | Add-PartitionAccessPath -AssignDriveLetter
+                if (-not $driveLetter -and $bootPartition) {
+                    Log-Message "Drive letter not auto-assigned, forcing assignment..."
+                    try {
+                        $bootPartition | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop
                         Start-Sleep -Seconds 2
                         $bootPartition = Get-Partition -DiskNumber $targetDiskNumber -PartitionNumber $bootPartition.PartitionNumber
                         $driveLetter = $bootPartition.DriveLetter
+                    } catch {
+                        Log-Message "Failed to assign drive letter: $_" -Error
                     }
-                } else {
-                    throw "Cannot find newly created boot partition"
+                }
+
+                if (-not $driveLetter) {
+                    throw "Cannot find newly created boot partition or assign drive letter"
                 }
             }
 
@@ -3150,7 +1690,44 @@ exit
                     }
                 }
             } else {
-                Log-Message "Custom ISO mounted. Skipping validation."
+                # ─── Custom ISO validation ─────────────────────────────────────
+                $isoSize = (Get-Item $script:IsoPath).Length / 1GB
+                if ($isoSize -lt 1.0) {
+                    Log-Message "Warning: Custom ISO is only $([math]::Round($isoSize, 2)) GB - likely not a valid Linux image" -Error
+                    $response = [System.Windows.Forms.MessageBox]::Show(
+                        "The ISO file appears too small ($([math]::Round($isoSize, 2)) GB). Continue anyway?",
+                        "Invalid ISO",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    if ($response -ne [System.Windows.Forms.DialogResult]::Yes) {
+                        Dismount-DiskImage -ImagePath $script:IsoPath
+                        return
+                    }
+                }
+
+                $bootIndicators = @("isolinux", "boot", "EFI", "casper", "live", "squashfs")
+                $foundBootFiles = $false
+                foreach ($indicator in $bootIndicators) {
+                    if (Test-Path "$sourceDrive\$indicator") {
+                        $foundBootFiles = $true
+                        break
+                    }
+                }
+                if (-not $foundBootFiles) {
+                    Log-Message "Warning: Custom ISO doesn't contain recognizable boot files" -Error
+                    $response = [System.Windows.Forms.MessageBox]::Show(
+                        "The ISO doesn't appear to be a bootable Linux image. Continue anyway?",
+                        "Invalid ISO",
+                        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    )
+                    if ($response -ne [System.Windows.Forms.DialogResult]::Yes) {
+                        Dismount-DiskImage -ImagePath $script:IsoPath
+                        return
+                    }
+                }
+                Log-Message "Custom ISO validation passed ($([math]::Round($isoSize, 2)) GB)"
             }
         }
         catch {
@@ -3167,6 +1744,9 @@ exit
                 try {
                     Remove-Item $script:IsoPath -Force
                     Log-Message "Deleted corrupted ISO"
+
+                    # Dismount failed ISO before recursive call to prevent double-dismount in finally
+                    Dismount-DiskImage -ImagePath $script:IsoPath -ErrorAction SilentlyContinue
 
                     Set-Status "Re-downloading $distroName ISO..."
                     if (Download-LinuxISO -Destination $script:IsoPath) {
@@ -3192,9 +1772,15 @@ exit
                 $isoSourceLetter = $sourceDrive.TrimEnd(':').ToLower()
                 Log-Message "Copying files via WSL to ext4 partition at $wslMountPath..."
                 Set-Status "Copying files via WSL (this may take 10-20 minutes)..."
-                $result = & wsl -u root bash -c "cp -a /mnt/$isoSourceLetter/* $wslMountPath/ 2>&1"
-                if ($LASTEXITCODE -ne 0) {
-                    Log-Message "WSL file copy failed: $result" -Error
+                $wsResult = & wsl -u root bash -c "cp -a /mnt/$isoSourceLetter/* $wslMountPath/ 2>&1; echo EXIT_CODE=\$?"
+                $exitLine = $wsResult | Where-Object { $_ -match "EXIT_CODE=" }
+                $wsExitCode = if ($exitLine) { [int]($exitLine -replace "EXIT_CODE=", "") } else { $LASTEXITCODE }
+                if ($wsExitCode -ne 0) {
+                    $errorLines = $wsResult | Where-Object { $_ -notmatch "EXIT_CODE=" }
+                    Log-Message "WSL file copy failed (exit $wsExitCode):" -Error
+                    foreach ($el in $errorLines) {
+                        Log-Message "  $el" -Error
+                    }
                     return
                 }
                 Log-Message "Files copied successfully via WSL!"
@@ -3217,6 +1803,18 @@ exit
                 if ($LASTEXITCODE -ge 8) {
                     Log-Message "Failed to copy files! Exit code: $LASTEXITCODE" -Error
                     return
+                } elseif ($LASTEXITCODE -gt 0) {
+                    $exitMessages = @{
+                        1 = "One or more files were copied successfully"
+                        2 = "Extra files/directories detected - nothing copied"
+                        3 = "Files copied AND extra files detected"
+                        4 = "Mismatched files/directories detected"
+                        5 = "Files copied AND mismatches detected"
+                        6 = "Extra files AND mismatches detected"
+                        7 = "Files copied, extra files, AND mismatches detected"
+                    }
+                    $msg = $exitMessages[$LASTEXITCODE]
+                    if ($msg) { Log-Message "Robocopy warning (exit $LASTEXITCODE): $msg" }
                 }
 
                 Log-Message "Files copied successfully!"
@@ -3239,7 +1837,7 @@ exit
             return
         }
         finally {
-            Dismount-DiskImage -ImagePath $script:IsoPath
+            Dismount-DiskImage -ImagePath $script:IsoPath -ErrorAction SilentlyContinue
         }
 
         # Fedora-specific: fix volume label in GRUB and isolinux configs
@@ -3272,15 +1870,33 @@ exit
                 $patchedCount = 0
                 foreach ($cfgFile in $bootConfigFiles) {
                     try {
-                        $content = Get-Content $cfgFile -Raw -ErrorAction Stop
+                        # Read as bytes to preserve original encoding and line endings
+                        $rawBytes = [System.IO.File]::ReadAllBytes($cfgFile)
+                        $content = [System.Text.Encoding]::UTF8.GetString($rawBytes)
                         $originalContent = $content
 
-                        $content = $content -replace '(root=live:(?:CD)?LABEL=)([^\s\\]+)', "`$1$fedoraLabel"
-                        $content = $content -replace '(set isolabel=)([^\s]+)', "`$1$fedoraLabel"
-                        $content = $content -replace '(CDLABEL=)([^\s\\]+)', "`$1$fedoraLabel"
+                        # Only replace labels in non-comment lines
+                        # Fedora uses LABEL= in kernel parameters and set isolabel=
+                        $lines = $content -split "`n"
+                        $newLines = @()
+                        foreach ($line in $lines) {
+                            $trimmed = $line.TrimStart()
+                            # Skip comment lines
+                            if ($trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
+                                $newLines += $line
+                                continue
+                            }
+                            # Replace LABEL references in active config lines
+                            $line = $line -replace '(root=live:(?:CD)?LABEL=)([^\s\\]+)', "`$1$fedoraLabel"
+                            $line = $line -replace '(set\s+isolabel=)([^\s]+)', "`$1$fedoraLabel"
+                            $line = $line -replace '(CDLABEL=)([^\s\\]+)', "`$1$fedoraLabel"
+                            $newLines += $line
+                        }
+                        $content = $newLines -join "`n"
 
                         if ($content -ne $originalContent) {
-                            Set-Content -Path $cfgFile -Value $content -Encoding UTF8 -Force
+                            # Write back preserving original line endings
+                            [System.IO.File]::WriteAllText($cfgFile, $content, [System.Text.Encoding]::UTF8)
                             Log-Message "  Patched: $(Split-Path -Leaf $cfgFile)"
                             $patchedCount++
                         } else {
@@ -3340,20 +1956,27 @@ exit
                 $patchedCount = 0
                 foreach ($cfgFile in $bootConfigFiles) {
                     try {
-                        $content = Get-Content $cfgFile -Raw -ErrorAction Stop
+                        $rawBytes = [System.IO.File]::ReadAllBytes($cfgFile)
+                        $content = [System.Text.Encoding]::UTF8.GetString($rawBytes)
                         $originalContent = $content
 
-                        # Patch archisolabel= and archisosearchlabel= (kernel command line)
-                        $content = $content -replace '(archiso(?:search)?label=)([^\s\\]+)', "`$1$cachyLabel"
-
-                        # Patch archisodevice=/dev/disk/by-label/LABEL
-                        $content = $content -replace '(archisodevice=/dev/disk/by-label/)([^\s\\]+)', "`$1$cachyLabel"
-
-                        # Patch GRUB search commands with --label or --fs-label
-                        $content = $content -replace "(search\s+[^\r\n]*?--(?:label|fs-label)\s+)(\S+)", "`$1$cachyLabel"
+                        $lines = $content -split "`n"
+                        $newLines = @()
+                        foreach ($line in $lines) {
+                            $trimmed = $line.TrimStart()
+                            if ($trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
+                                $newLines += $line
+                                continue
+                            }
+                            $line = $line -replace '(archiso(?:search)?label=)([^\s\\]+)', "`$1$cachyLabel"
+                            $line = $line -replace '(archisodevice=/dev/disk/by-label/)([^\s\\]+)', "`$1$cachyLabel"
+                            $line = $line -replace "(search\s+[^\r\n]*?--(?:label|fs-label)\s+)(\S+)", "`$1$cachyLabel"
+                            $newLines += $line
+                        }
+                        $content = $newLines -join "`n"
 
                         if ($content -ne $originalContent) {
-                            Set-Content -Path $cfgFile -Value $content -Encoding UTF8 -Force
+                            [System.IO.File]::WriteAllText($cfgFile, $content, [System.Text.Encoding]::UTF8)
                             Log-Message "  Patched: $(Split-Path -Leaf $cfgFile)"
                             $patchedCount++
                         } else {
@@ -3526,14 +2149,14 @@ exit
                     # rEFInd boot entry - point to the rEFInd partition
                     Log-Message "Creating UEFI boot entry for rEFInd..."
                     $refindDrive = "$($script:RefindDriveLetter):"
-                    $bootCreated = New-UefiBootEntry -DistroName "rEFInd - ULLI" `
+                    $bootCreated = New-UefiBootEntry -DistroName "rEFInd - QuickLinux" `
                         -DevicePartition $refindDrive -EfiPath "\EFI\BOOT\BOOTx64.EFI"
 
                     if ($bootCreated) {
                         Log-Message "rEFInd UEFI boot entry created and set as default!"
                     } else {
                         Log-Message "Could not create rEFInd boot entry automatically" -Error
-                        Log-Message "You will need to select 'rEFInd - ULLI' manually in UEFI/BIOS boot menu" -Error
+                        Log-Message "You will need to select 'rEFInd - QuickLinux' manually in UEFI/BIOS boot menu" -Error
                     }
                 } else {
                     # Standard boot entry (no rEFInd)
@@ -3637,7 +2260,7 @@ exit
 
         # Success
         Log-Message "====================================="
-        Log-Message "Installation Complete!"
+        Log-Message "Preparation Complete!"
         Log-Message "====================================="
         Log-Message "$distroName boot partition created ($bootPartFsType) at $script:NewDrive"
         if ($customRadio.Checked) {
@@ -3681,7 +2304,7 @@ exit
                 Log-Message "1. Restart your computer"
                 Log-Message "2. rEFInd should appear automatically and show `"$distroName`""
                 Log-Message "3. If rEFInd doesn't appear, enter UEFI/BIOS (F2/F10/F12/DEL)"
-                Log-Message "   and select `"rEFInd - ULLI`" from the boot menu"
+                Log-Message "   and select `"rEFInd - QuickLinux`" from the boot menu"
                 Log-Message "4. Disable Secure Boot if needed"
             } else {
                 Log-Message "To boot $distroName, use the UEFI boot menu:"
@@ -3693,17 +2316,36 @@ exit
             Log-Message ""
         }
 
-        Set-Status "Installation complete!"
+        Set-Status "Ready to boot live Linux install environment"
 
         # Delete ISO if requested
         if ($deleteIsoCheck.Checked -and -not $customRadio.Checked) {
             try {
                 Remove-Item $script:IsoPath -Force
                 Log-Message "ISO file deleted."
+                $script:IsoDownloaded = $false
             }
             catch {
                 Log-Message "Could not delete ISO file."
             }
+        }
+
+        # Reset ISO state for next run
+        if ($deleteIsoCheck.Checked -and -not $customRadio.Checked) {
+            $script:IsoDownloaded = $false
+            $isoStatus.Text = "Status: ISO deleted after preparation"
+            $downloadButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
+            $downloadButton.ForeColor = [System.Drawing.Color]::White
+            $downloadButton.Enabled = $true
+            $prepareButton.Enabled = $false
+        } else {
+            $script:IsoDownloaded = $false
+            $distro = Get-SelectedDistro
+            $isoStatus.Text = "Status: $distro.Name ISO cached - click 'Download ISO' to re-download"
+            $downloadButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
+            $downloadButton.ForeColor = [System.Drawing.Color]::White
+            $downloadButton.Enabled = $true
+            $prepareButton.Enabled = $false
         }
 
         # Auto-restart if enabled
@@ -3713,28 +2355,45 @@ exit
 
             $countdownForm = New-Object System.Windows.Forms.Form
             $countdownForm.Text = "System Restart"
-            $countdownForm.Size = New-Object System.Drawing.Size(420, 210)
+            $countdownForm.Size = New-Object System.Drawing.Size(420, 250)
             $countdownForm.StartPosition = "CenterScreen"
             $countdownForm.FormBorderStyle = "FixedDialog"
             $countdownForm.MaximizeBox = $false
             $countdownForm.MinimizeBox = $false
 
             $countdownLabel = New-Object System.Windows.Forms.Label
-            $countdownLabel.Text = "System will restart in 30 seconds...`n`nUEFI boot priority has been configured.`nThe system will boot directly into $distroName."
+            $countdownLabel.Text = "System will restart in $script:CountdownSeconds seconds...`n`nYour computer will boot into the $distroName live session.`nFrom there, run the installer to complete the installation."
             $countdownLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
             $countdownLabel.Location = New-Object System.Drawing.Point(20, 20)
             $countdownLabel.Size = New-Object System.Drawing.Size(380, 90)
             $countdownLabel.TextAlign = "MiddleCenter"
             $countdownForm.Controls.Add($countdownLabel)
 
+            $script:CancelRestart = $false
+            $script:RestartNow = $false
+
+            $restartNowButton = New-Object System.Windows.Forms.Button
+            $restartNowButton.Text = "Restart Now"
+            $restartNowButton.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+            $restartNowButton.Location = New-Object System.Drawing.Point(40, 120)
+            $restartNowButton.Size = New-Object System.Drawing.Size(150, 35)
+            $restartNowButton.BackColor = [System.Drawing.Color]::FromArgb(135, 185, 74)
+            $restartNowButton.ForeColor = [System.Drawing.Color]::White
+            $restartNowButton.FlatStyle = "Flat"
+            $countdownForm.Controls.Add($restartNowButton)
+
             $cancelButton = New-Object System.Windows.Forms.Button
             $cancelButton.Text = "Cancel Restart"
             $cancelButton.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-            $cancelButton.Location = New-Object System.Drawing.Point(135, 120)
+            $cancelButton.Location = New-Object System.Drawing.Point(210, 120)
             $cancelButton.Size = New-Object System.Drawing.Size(150, 35)
             $countdownForm.Controls.Add($cancelButton)
 
-            $script:CancelRestart = $false
+            $restartNowButton.Add_Click({
+                $script:RestartNow = $true
+                $countdownForm.Close()
+            })
+
             $cancelButton.Add_Click({
                 $script:CancelRestart = $true
                 $countdownForm.Close()
@@ -3742,11 +2401,10 @@ exit
 
             $timer = New-Object System.Windows.Forms.Timer
             $timer.Interval = 1000
-            $script:CountdownSeconds = 30
 
             $timer.Add_Tick({
                 $script:CountdownSeconds--
-                $countdownLabel.Text = "System will restart in $script:CountdownSeconds seconds...`n`nUEFI boot priority has been configured.`nThe system will boot directly into $distroName."
+                $countdownLabel.Text = "System will restart in $script:CountdownSeconds seconds...`n`nYour computer will boot into the $distroName live session.`nFrom there, run the installer to complete the installation."
 
                 if ($script:CountdownSeconds -le 0) {
                     $timer.Stop()
@@ -3758,7 +2416,7 @@ exit
             $countdownForm.ShowDialog()
             $timer.Stop()
 
-            if (-not $script:CancelRestart) {
+            if ($script:RestartNow -or -not $script:CancelRestart) {
                 Log-Message "Restarting system..."
                 Start-Sleep -Seconds 2
                 Restart-Computer -Force
@@ -3769,8 +2427,51 @@ exit
         }
     }
     catch {
-        Log-Message "Installation error: $_" -Error
-        Set-Status "Installation failed!"
+        Log-Message "Preparation error: $_" -Error
+        Set-Status "Preparation failed!"
+
+        # ── Attempt cleanup of partial state ─────────────────────────────────
+        Log-Message "Attempting to clean up partial installation state..."
+        try {
+            # Dismount ISO if still mounted
+            if ($script:IsoPath -and (Get-DiskImage -ImagePath $script:IsoPath -ErrorAction SilentlyContinue).IsAttached) {
+                Dismount-DiskImage -ImagePath $script:IsoPath -ErrorAction SilentlyContinue
+                Log-Message "Dismounted ISO"
+            }
+        } catch {}
+
+        try {
+            # Remove rEFInd partition if it was created but installation failed
+            if ($useRefind -and $script:RefindPartitionNumber -and $targetDiskNumber) {
+                Log-Message "Removing rEFInd partition (installation failed)..."
+                Remove-Partition -DiskNumber $targetDiskNumber `
+                    -PartitionNumber $script:RefindPartitionNumber `
+                    -Confirm:$false `
+                    -ErrorAction SilentlyContinue
+            }
+        } catch {}
+
+        try {
+            # Remove boot partition if it was created but installation failed
+            if ($script:NewDrive) {
+                try {
+                    $vol = Get-Volume -DriveLetter $script:NewDrive.TrimEnd('\').TrimEnd(':') -ErrorAction SilentlyContinue
+                    if ($vol) {
+                        $part = Get-PartitionFresh -DiskNumber $targetDiskNumber -PartitionNumber $vol.DriveLetter
+                        if ($part -and $part.GptType -notmatch "basic_data") {
+                            Log-Message "Removing boot partition (installation failed)..."
+                            Remove-Partition -DiskNumber $targetDiskNumber `
+                                -PartitionNumber $part.PartitionNumber `
+                                -Confirm:$false `
+                                -ErrorAction SilentlyContinue
+                        }
+                    }
+                } catch {}
+            }
+        } catch {}
+
+        Log-Message "Cleanup complete. You may retry the installation."
+        Log-Message "NOTE: If partitions remain on disk, use Disk Management to remove them manually."
     }
     finally {
         # Clean up WSL mount if ext4 boot was used
@@ -3779,81 +2480,7 @@ exit
             $script:WslMountInfo = $null
         }
         $script:IsRunning = $false
+        $script:CancelRequested = $false
         Set-UILocked $false
     }
 }
-
-# Event handlers
-$startButton.Add_Click({
-    Start-Installation
-})
-
-$exitButton.Add_Click({
-    if ($script:IsRunning) {
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            "Installation is in progress. Are you sure you want to exit?",
-            "Confirm Exit",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        )
-
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            $form.Close()
-        }
-    } else {
-        $form.Close()
-    }
-})
-
-$customRadio.Add_CheckedChanged({
-    if ($customRadio.Checked) {
-        $customIsoTextbox.Enabled = $true
-        $browseButton.Enabled = $true
-        $distroCombo.Enabled = $false
-    } else {
-        $customIsoTextbox.Enabled = $false
-        $browseButton.Enabled = $false
-        $distroCombo.Enabled = $true
-    }
-})
-
-# ext4 boot checkbox interlock with rEFInd
-$ext4BootCheck.Add_CheckedChanged({
-    if ($ext4BootCheck.Checked) {
-        # ext4 requires rEFInd (UEFI can't read ext4 natively)
-        if (-not $refindCheck.Checked) {
-            $refindCheck.Checked = $true
-        }
-    }
-})
-
-$refindCheck.Add_CheckedChanged({
-    # If rEFInd is unchecked, ext4 boot must also be unchecked
-    if (-not $refindCheck.Checked -and $ext4BootCheck.Checked) {
-        $ext4BootCheck.Checked = $false
-    }
-})
-
-$browseButton.Add_Click({
-    $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
-    $openFileDialog.Title = "Select Linux ISO File"
-    $openFileDialog.Filter = "ISO Files (*.iso)|*.iso|All Files (*.*)|*.*"
-    $openFileDialog.FilterIndex = 1
-    $openFileDialog.RestoreDirectory = $true
-
-    if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $script:CustomIsoPath = $openFileDialog.FileName
-        $customIsoTextbox.Text = $script:CustomIsoPath
-
-        $fileInfo = Get-Item $script:CustomIsoPath
-        $fileSizeGB = [math]::Round($fileInfo.Length / 1GB, 2)
-        Log-Message "Selected ISO: $(Split-Path -Leaf $script:CustomIsoPath)"
-        Log-Message "File size: $fileSizeGB GB"
-    }
-})
-
-# Initialize
-Update-DiskInfo
-
-# Show form
-$form.ShowDialog() | Out-Null
