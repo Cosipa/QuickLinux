@@ -11,16 +11,26 @@
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     try {
-        Start-Process powershell.exe -ArgumentList @(
-            "-ExecutionPolicy", "Bypass",
-            "-File", "`"$PSCommandPath`""
-        ) -Verb RunAs
+        if ($PSCommandPath) {
+            Start-Process powershell.exe -ArgumentList @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", "`"$PSCommandPath`""
+            ) -Verb RunAs
+        } else {
+            # In-memory execution (e.g. irm | iex) — relaunch the one-liner
+            $oneLiner = 'irm "https://cosipa.dev/quicklinux" | iex'
+            Start-Process powershell.exe -ArgumentList @(
+                "-ExecutionPolicy", "Bypass",
+                "-Command", $oneLiner
+            ) -Verb RunAs
+        }
     } catch {
         Write-Host "ERROR: Administrator privileges are required to run QuickLinux." -ForegroundColor Red
         Write-Host "Please right-click the script and select 'Run as Administrator'."
         Read-Host "Press Enter to exit"
+        return
     }
-    exit
+    if ($PSCommandPath) { exit } else { return }
 }
 # Add required assemblies
 Add-Type -AssemblyName System.Windows.Forms

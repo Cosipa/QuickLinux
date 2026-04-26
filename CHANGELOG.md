@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.0.1-beta] - 2026-04-26
 
+### Fixed
+
+- Auto-elevation now works correctly when running via `irm | iex` without closing the PowerShell window
+
 ### Added
 
 - One-liner installation via PowerShell (`irm "https://cosipa.dev/quicklinux" | iex`)
