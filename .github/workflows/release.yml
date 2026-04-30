@@ -30,5 +30,4 @@ jobs:
           gh release create ${{ github.ref_name }} \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            --prerelease \
             dist/quicklinux-windows.ps1
