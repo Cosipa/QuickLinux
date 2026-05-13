@@ -106,6 +106,7 @@ function Get-DistroData {
             Name           = $d.name
             RadioLabel     = $d.radio_label
             ExpectedSize   = $d.expected_size
+            SizeGB         = [double]$d.size_gb
             Mirrors        = @($d.mirrors)
             Checksum       = $d.checksum
             IsoFilename    = $d.iso_filename

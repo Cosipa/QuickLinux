@@ -22,6 +22,109 @@ function Get-PartitionLabel {
         return "Partition            "
     }
 }
+function Get-ContiguousInstallPlan {
+    param(
+        [Parameter(Mandatory)][int]$DiskNumber,
+        [Parameter(Mandatory)][int64]$AnchorEnd,
+        [Parameter(Mandatory)][int]$BootPartSizeGB,
+        [int]$LinuxSizeGB = 0,
+        [switch]$UseRefind
+    )
+
+    $disk = Get-Disk -Number $DiskNumber -ErrorAction Stop
+    $partitions = @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue | Sort-Object Offset)
+    $gaps = @()
+    $prevEnd = [int64]0
+    $totalUnallocated = [int64]0
+
+    foreach ($part in $partitions) {
+        $gapSize = $part.Offset - $prevEnd
+        if ($gapSize -gt 1MB) {
+            $gaps += [PSCustomObject]@{
+                Start = $prevEnd
+                End   = $part.Offset
+                Size  = $gapSize
+            }
+            $totalUnallocated += $gapSize
+        }
+        $prevEnd = $part.Offset + $part.Size
+    }
+
+    $trailingGap = $disk.Size - $prevEnd
+    if ($trailingGap -gt 1MB) {
+        $gaps += [PSCustomObject]@{
+            Start = $prevEnd
+            End   = $disk.Size
+            Size  = $trailingGap
+        }
+        $totalUnallocated += $trailingGap
+    }
+
+    $bootPartitionSize = [int64]($BootPartSizeGB * 1GB)
+    $alignmentSize = [int64](1MB)
+    $refindReserve = if ($UseRefind) { [int64]($script:RefindSizeMB * 1MB) } else { [int64]0 }
+    $bufferSize = [int64](16MB) + $refindReserve
+    $minGapRequired = $bootPartitionSize + $bufferSize + $alignmentSize
+    $usableGaps = @($gaps | Where-Object { $_.Size -ge $minGapRequired })
+
+    $result = [PSCustomObject]@{
+        DiskNumber            = $DiskNumber
+        AnchorEnd             = $AnchorEnd
+        TotalUnallocatedGB    = [math]::Round($totalUnallocated / 1GB, 2)
+        GapCount              = @($gaps).Count
+        MinGapRequiredGB      = [math]::Round($minGapRequired / 1GB, 2)
+        HasBootSpace          = $false
+        HasRequestedLinuxSpace = $false
+        ChosenGap             = $null
+        ChosenGapStartGB      = 0
+        ChosenGapSizeGB       = 0
+        BootPartitionOffset   = [int64]0
+        BootPartitionOffsetGB = 0
+        LinuxSpaceBytes       = [int64]0
+        LinuxSpaceGB          = 0
+        BufferMB              = [math]::Round($bufferSize / 1MB, 0)
+    }
+
+    if (-not $usableGaps) {
+        return $result
+    }
+
+    $anchorGap = @($usableGaps | Where-Object {
+        $_.Start -ge ($AnchorEnd - 1MB) -and $_.Start -le ($AnchorEnd + 1MB)
+    } | Select-Object -First 1)
+
+    $chosenGap = if ($anchorGap) { $anchorGap[0] }
+                 else {
+                     @($usableGaps | Where-Object { $_.Start -ge $AnchorEnd } | Sort-Object Size -Descending | Select-Object -First 1)[0]
+                 }
+
+    if (-not $chosenGap) {
+        return $result
+    }
+
+    $bootPartitionEndOffset = $chosenGap.End - $bufferSize
+    $bootPartitionOffset = $bootPartitionEndOffset - $bootPartitionSize
+    $bootPartitionOffset = [int64]([Math]::Floor($bootPartitionOffset / $alignmentSize)) * $alignmentSize
+
+    if ($bootPartitionOffset -lt ($chosenGap.Start + $alignmentSize)) {
+        return $result
+    }
+
+    $linuxSpace = $bootPartitionOffset - $chosenGap.Start
+    $requestedLinuxBytes = [int64]($LinuxSizeGB * 1GB)
+
+    $result.HasBootSpace = $true
+    $result.HasRequestedLinuxSpace = ($linuxSpace -ge $requestedLinuxBytes)
+    $result.ChosenGap = $chosenGap
+    $result.ChosenGapStartGB = [math]::Round($chosenGap.Start / 1GB, 2)
+    $result.ChosenGapSizeGB = [math]::Round($chosenGap.Size / 1GB, 2)
+    $result.BootPartitionOffset = $bootPartitionOffset
+    $result.BootPartitionOffsetGB = [math]::Round($bootPartitionOffset / 1GB, 2)
+    $result.LinuxSpaceBytes = $linuxSpace
+    $result.LinuxSpaceGB = [math]::Round($linuxSpace / 1GB, 2)
+
+    return $result
+}
 function Format-AfterLayout {
     param(
         [array]$Partitions,
@@ -243,6 +346,7 @@ function Update-DiskInfo {
         $script:CDriveInfo = @{
             DiskNumber = $cDrive.DiskNumber
             PartitionNumber = $partitionNumber
+            PartitionEndOffset = ($cDrive.Offset + $cDrive.Size)
             FreeGB = [math]::Round($volume.SizeRemaining / 1GB, 2)
             TotalGB = [math]::Round($volume.Size / 1GB, 2)
         }
@@ -906,11 +1010,18 @@ function Start-Installation {
                 return
             }
         } elseif ($selectedStrategy -eq "other_drive") {
-            $otherDiskFreeGB = Get-DiskUnallocatedGB -DiskNumber $targetDiskNumber
-            $minNeededFreeGB = $bootPartSizeGB + $refindGB + 1
-            if ($otherDiskFreeGB -lt $minNeededFreeGB) {
-                Log-Message "Error: Not enough unallocated space on Disk $targetDiskNumber!" -Error
-                Log-Message "Need: $minNeededFreeGB GB, Have: $otherDiskFreeGB GB" -Error
+            $targetParts = @(Get-Partition -DiskNumber $targetDiskNumber -ErrorAction SilentlyContinue | Sort-Object Offset)
+            $anchorEnd = if ($targetParts.Count -gt 0) {
+                $lastPart = $targetParts | Select-Object -Last 1
+                $lastPart.Offset + $lastPart.Size
+            } else {
+                [int64](1MB)
+            }
+            $otherDrivePlan = Get-ContiguousInstallPlan -DiskNumber $targetDiskNumber -AnchorEnd $anchorEnd `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $linuxSizeGB -UseRefind:$useRefind
+            if (-not $otherDrivePlan.HasRequestedLinuxSpace) {
+                Log-Message "Error: Disk $targetDiskNumber does not have a contiguous unallocated gap large enough for Linux + boot partition." -Error
+                Log-Message "Need Linux: $linuxSizeGB GB, boot: $bootPartSizeGB GB, contiguous Linux space after boot placement: $($otherDrivePlan.LinuxSpaceGB) GB" -Error
                 return
             }
         } elseif ($selectedStrategy -eq "other_drive_shrink") {
@@ -1031,6 +1142,14 @@ function Start-Installation {
 
             if ($targetDiskNumber -eq $script:CDriveInfo.DiskNumber) {
                 Log-Message "REFUSING to wipe the disk containing Windows!" -Error
+                return
+            }
+
+            $wipeDisk = Get-Disk -Number $targetDiskNumber -ErrorAction Stop
+            $wipeUsableGB = [math]::Floor(($wipeDisk.Size / 1GB) - $bootPartSizeGB - $refindGB)
+            if ($wipeUsableGB -lt $linuxSizeGB) {
+                Log-Message "Error: Disk $targetDiskNumber is too small for the requested Linux size after reserving boot space." -Error
+                Log-Message "Requested Linux: $linuxSizeGB GB, Usable after boot: $wipeUsableGB GB" -Error
                 return
             }
 
@@ -1258,83 +1377,41 @@ exit
                 }
             }
 
-            # ── Scan ALL unallocated gaps on the disk ────────────────────────
-            $gaps = @()
+            $requiredLinuxInGapGB = if ($selectedStrategy -eq "use_free_boot") { 0 } else { $linuxSizeGB }
+            $plan = Get-ContiguousInstallPlan -DiskNumber $targetDiskNumber -AnchorEnd $anchorEnd `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $requiredLinuxInGapGB -UseRefind:$useRefind
+
+            Log-Message "Scanning disk for unallocated gaps..."
             $sortedParts = $partitions | Sort-Object Offset
             $prevEnd = [int64]0
-
             foreach ($part in $sortedParts) {
                 $gapSize = $part.Offset - $prevEnd
                 if ($gapSize -gt 1MB) {
-                    $gaps += [PSCustomObject]@{
-                        Start = $prevEnd
-                        End   = $part.Offset
-                        Size  = $gapSize
-                    }
+                    Log-Message "  Gap at $([math]::Round($prevEnd / 1GB, 2)) GB: $([math]::Round($gapSize / 1GB, 2)) GB"
                 }
                 $prevEnd = $part.Offset + $part.Size
             }
             $trailingGap = $disk.Size - $prevEnd
             if ($trailingGap -gt 1MB) {
-                $gaps += [PSCustomObject]@{
-                    Start = $prevEnd
-                    End   = $disk.Size
-                    Size  = $trailingGap
-                }
+                Log-Message "  Gap at $([math]::Round($prevEnd / 1GB, 2)) GB: $([math]::Round($trailingGap / 1GB, 2)) GB"
             }
 
-            $bootPartitionSize = [int64]($bootPartSizeGB * 1GB)
-            $alignmentSize = [int64](1MB)
-            $refindReserve = if ($useRefind) { [int64]($script:RefindSizeMB * 1MB) } else { [int64]0 }
-            $bufferSize = [int64](16MB) + $refindReserve
-            $minGapRequired = $bootPartitionSize + $bufferSize + $alignmentSize
-
-            Log-Message "Scanning disk for unallocated gaps..."
-            foreach ($gap in $gaps) {
-                $gapGB = [math]::Round($gap.Size / 1GB, 2)
-                $gapStartGB = [math]::Round($gap.Start / 1GB, 2)
-                Log-Message "  Gap at $gapStartGB GB: $gapGB GB"
+            if (-not $plan.HasBootSpace -or -not $plan.ChosenGap) {
+                throw "No suitable gap found after the anchor partition (end: $([math]::Round($anchorEnd / 1GB, 2)) GB). Cannot safely place boot partition."
+            }
+            if (-not $plan.HasRequestedLinuxSpace) {
+                throw "Selected gap only leaves $($plan.LinuxSpaceGB) GB for Linux after boot partition placement, but $requiredLinuxInGapGB GB is required in that gap for strategy '$selectedStrategy'."
             }
 
-            $usableGaps = $gaps | Where-Object { $_.Size -ge $minGapRequired }
+            $chosenGap = $plan.ChosenGap
+            $chosenGapGB = $plan.ChosenGapSizeGB
+            $chosenStartGB = $plan.ChosenGapStartGB
+            $bootPartitionOffset = $plan.BootPartitionOffset
+            $linuxSpaceGB = $plan.LinuxSpaceGB
 
-            if (-not $usableGaps) {
-                throw "No unallocated gap large enough for the $bootPartSizeGB GB boot partition"
-            }
-
-            $anchorGap = $usableGaps | Where-Object {
-                $_.Start -ge ($anchorEnd - 1MB) -and $_.Start -le ($anchorEnd + 1MB)
-            } | Select-Object -First 1
-
-            $chosenGap = if ($anchorGap) { $anchorGap }
-                          else {
-                              # Fallback: pick largest gap AFTER the anchor partition, not anywhere on disk
-                              # This ensures boot partition is placed after Windows/data partitions
-                              $usableGapsAfterAnchor = $usableGaps | Where-Object { $_.Start -ge $anchorEnd }
-                              if ($usableGapsAfterAnchor) {
-                                  $usableGapsAfterAnchor | Sort-Object Size -Descending | Select-Object -First 1
-                              } else {
-                                  throw "No suitable gap found after the anchor partition (end: $([math]::Round($anchorEnd / 1GB, 2)) GB). Cannot safely place boot partition."
-                              }
-                          }
-
-            $chosenGapGB = [math]::Round($chosenGap.Size / 1GB, 2)
-            $chosenStartGB = [math]::Round($chosenGap.Start / 1GB, 2)
             Log-Message "Selected gap for boot partition: $chosenGapGB GB starting at $chosenStartGB GB"
-
-            $bootPartitionEndOffset = $chosenGap.End - $bufferSize
-            $bootPartitionOffset = $bootPartitionEndOffset - $bootPartitionSize
-            $bootPartitionOffset = [int64]([Math]::Floor($bootPartitionOffset / $alignmentSize)) * $alignmentSize
-
-            if ($bootPartitionOffset -lt ($chosenGap.Start + $alignmentSize)) {
-                throw "Selected gap ($chosenGapGB GB) is too small after alignment for the boot partition"
-            }
-
-            $linuxSpace = $bootPartitionOffset - $chosenGap.Start
-            $linuxSpaceGB = [math]::Round($linuxSpace / 1GB, 2)
-
             Log-Message "Unallocated space starts at: $chosenStartGB GB"
-            Log-Message "Boot partition will start at: $([math]::Round($bootPartitionOffset / 1GB, 2)) GB"
+            Log-Message "Boot partition will start at: $($plan.BootPartitionOffsetGB) GB"
             Log-Message "Gap ends at: $([math]::Round($chosenGap.End / 1GB, 2)) GB"
             Log-Message "Linux will have $linuxSpaceGB GB of unallocated space"
 

@@ -107,14 +107,16 @@ function Download-LinuxISO {
     $isoName = $distro.Name
     $expectedSize = $distro.ExpectedSize
     $mirrors = $distro.Mirrors
+    $expectedIsoGB = if ($distro.SizeGB) { [double]$distro.SizeGB } else { 5.0 }
 
     # Check available disk space before downloading
     $destDir = Split-Path -Parent $Destination
     if ($destDir -and (Test-Path $destDir)) {
         $drive = [System.IO.DriveInfo]::new($destDir.TrimEnd('\'))
         $freeGB = [math]::Round($drive.AvailableFreeSpace / 1GB, 1)
-        if ($freeGB -lt 5) {
-            Log-Message "Insufficient disk space: need at least 5 GB, have $freeGB GB" -Error
+        $requiredGB = [math]::Ceiling($expectedIsoGB + 1)
+        if ($freeGB -lt $requiredGB) {
+            Log-Message "Insufficient disk space: need at least $requiredGB GB, have $freeGB GB" -Error
             return $false
         }
         Log-Message "Available space on $drive`: $freeGB GB"

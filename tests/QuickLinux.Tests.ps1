@@ -8,6 +8,7 @@ BeforeAll {
         "name": "Ubuntu 24.04.4 LTS",
         "radio_label": "Ubuntu 24.04.4 LTS",
         "expected_size": "4.5 GB",
+        "size_gb": 4.5,
         "mirrors": ["https://releases.ubuntu.com/24.04/ubuntu-24.04.2-desktop-amd64.iso"],
         "checksum": "abc123def456",
         "iso_filename": "ubuntu-24.04.2-desktop-amd64.iso",
@@ -159,6 +160,55 @@ Describe "Get-DistroData" {
     It "Contains ubuntu key" {
         $result = Get-DistroData
         $result.Keys | Should -Contain "ubuntu"
+    }
+
+    It "Loads numeric ISO size data" {
+        $result = Get-DistroData
+        $result["ubuntu"].SizeGB | Should -Be 4.5
+    }
+}
+
+Describe "Get-ContiguousInstallPlan" {
+    It "Finds a valid contiguous gap when enough space exists" {
+        Mock Get-Disk { return [PSCustomObject]@{ Number = 1; Size = 100GB } } -ParameterFilter { $Number -eq 1 }
+        Mock Get-Partition { return @() } -ParameterFilter { $DiskNumber -eq 1 }
+
+        $plan = Get-ContiguousInstallPlan -DiskNumber 1 -AnchorEnd 1MB -BootPartSizeGB 7 -LinuxSizeGB 20
+        $plan.HasBootSpace | Should -Be $true
+        $plan.HasRequestedLinuxSpace | Should -Be $true
+        $plan.LinuxSpaceGB | Should -BeGreaterThan 20
+    }
+
+    It "Rejects fragmented space when total free is enough but no contiguous gap is large enough" {
+        Mock Get-Disk { return [PSCustomObject]@{ Number = 2; Size = 100GB } } -ParameterFilter { $Number -eq 2 }
+        Mock Get-Partition {
+            return @(
+                [PSCustomObject]@{ Offset = 0GB; Size = 10GB; PartitionNumber = 1 },
+                [PSCustomObject]@{ Offset = 40GB; Size = 10GB; PartitionNumber = 2 },
+                [PSCustomObject]@{ Offset = 80GB; Size = 10GB; PartitionNumber = 3 }
+            )
+        } -ParameterFilter { $DiskNumber -eq 2 }
+
+        $plan = Get-ContiguousInstallPlan -DiskNumber 2 -AnchorEnd 10GB -BootPartSizeGB 7 -LinuxSizeGB 25
+        $plan.TotalUnallocatedGB | Should -BeGreaterThan 25
+        $plan.HasBootSpace | Should -Be $true
+        $plan.HasRequestedLinuxSpace | Should -Be $false
+        $plan.LinuxSpaceGB | Should -BeLessThan 25
+    }
+
+    It "Only considers space after the anchor partition" {
+        Mock Get-Disk { return [PSCustomObject]@{ Number = 3; Size = 100GB } } -ParameterFilter { $Number -eq 3 }
+        Mock Get-Partition {
+            return @(
+                [PSCustomObject]@{ Offset = 20GB; Size = 10GB; PartitionNumber = 1 },
+                [PSCustomObject]@{ Offset = 45GB; Size = 50GB; PartitionNumber = 2 }
+            )
+        } -ParameterFilter { $DiskNumber -eq 3 }
+
+        $plan = Get-ContiguousInstallPlan -DiskNumber 3 -AnchorEnd 30GB -BootPartSizeGB 7 -LinuxSizeGB 10
+        $plan.TotalUnallocatedGB | Should -BeGreaterThan 10
+        $plan.HasRequestedLinuxSpace | Should -Be $false
+        $plan.ChosenGapStartGB | Should -Be 30
     }
 }
 

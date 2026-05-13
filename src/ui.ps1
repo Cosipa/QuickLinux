@@ -262,7 +262,7 @@ function Show-DiskPlan {
 
         $diskItems += [PSCustomObject]@{
             Number = $d.Number
-            Label = "$prefix - $model - $dSizeGB GB ($busType)$letterInfo - Available for Linux: $dFreeGB GB"
+            Label = "$prefix - $model - $dSizeGB GB ($busType)$letterInfo - Total unallocated: $dFreeGB GB"
             IsCDisk = $isCDisk
             TotalGB = $dSizeGB
             FreeGB = $dFreeGB
@@ -272,16 +272,45 @@ function Show-DiskPlan {
     # ── Early check: any disk has enough space for minimum Linux? ─────────────
     $hasEnoughSpace = $false
     foreach ($item in $diskItems) {
+        $minBootPlanGB = Get-BootPartSizeGB
         if ($item.IsCDisk) {
-            # C: can be shrunk - check shrinkable space, not just unallocated
-            $shrinkableGB = $script:MaxAvailableGB
-            if ($shrinkableGB -ge $script:MinLinuxSizeGB) {
+            $minShrinkAllGB = [math]::Floor($script:CDriveInfo.FreeGB - $minBootPlanGB - 10)
+            $cPart = Get-Partition -DriveLetter C -ErrorAction SilentlyContinue
+            $cAnchorEnd = if ($cPart) { $cPart.Offset + $cPart.Size } else { $script:CDriveInfo.PartitionEndOffset }
+            $minFreePlan = Get-ContiguousInstallPlan -DiskNumber $item.Number -AnchorEnd $cAnchorEnd `
+                -BootPartSizeGB $minBootPlanGB -LinuxSizeGB $script:MinLinuxSizeGB
+            $minBootOnlyPlan = Get-ContiguousInstallPlan -DiskNumber $item.Number -AnchorEnd $cAnchorEnd `
+                -BootPartSizeGB $minBootPlanGB -LinuxSizeGB 0
+            if ($minShrinkAllGB -ge $script:MinLinuxSizeGB -or
+                $minFreePlan.HasRequestedLinuxSpace -or
+                ($minBootOnlyPlan.HasBootSpace -and [math]::Floor($script:CDriveInfo.FreeGB - 10) -ge $script:MinLinuxSizeGB)) {
                 $hasEnoughSpace = $true
                 break
             }
         } else {
-            # Other disks: check actual unallocated space
-            if ($item.FreeGB -ge $script:MinLinuxSizeGB) {
+            $parts = @(Get-Partition -DiskNumber $item.Number -ErrorAction SilentlyContinue | Sort-Object Offset)
+            $anchorEnd = if ($parts.Count -gt 0) {
+                $lastPart = $parts | Select-Object -Last 1
+                $lastPart.Offset + $lastPart.Size
+            } else {
+                [int64](1MB)
+            }
+            $minFreePlan = Get-ContiguousInstallPlan -DiskNumber $item.Number -AnchorEnd $anchorEnd `
+                -BootPartSizeGB $minBootPlanGB -LinuxSizeGB $script:MinLinuxSizeGB
+            $canShrinkForMin = $false
+            foreach ($part in $parts) {
+                if ($part.DriveLetter) {
+                    try {
+                        $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
+                        if ($vol.FileSystem -eq "NTFS" -and [math]::Floor(($vol.SizeRemaining / 1GB) - $minBootPlanGB - 5) -ge $script:MinLinuxSizeGB) {
+                            $canShrinkForMin = $true
+                            break
+                        }
+                    } catch {}
+                }
+            }
+            $canWipeForMin = ($item.TotalGB -ge ($script:MinLinuxSizeGB + $minBootPlanGB + 1))
+            if ($minFreePlan.HasRequestedLinuxSpace -or $canShrinkForMin -or $canWipeForMin) {
                 $hasEnoughSpace = $true
                 break
             }
@@ -506,11 +535,8 @@ function Show-DiskPlan {
         $selDiskNum = $selDisk.Number
         $isTargetCDisk = $selDisk.IsCDisk
 
-        $LinuxSizeGB = [int]$sizeNumeric.Value
         $useRefind = $refindCheck.Checked
         $refindGB = if ($useRefind) { 0.1 } else { 0 }
-        $totalNeededGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
-
         $script:DiskPlanTargetDisk = $selDiskNum
 
         # Update current layout text
@@ -526,6 +552,61 @@ function Show-DiskPlan {
         }
         $currentText.Text = ($layoutLines -join "`r`n")
 
+        $dynamicMaxLinuxGB = $script:MinLinuxSizeGB
+        if ($isTargetCDisk) {
+            $cPartitionForMax = Get-Partition -DriveLetter C
+            $cPartitionEndForMax = $cPartitionForMax.Offset + $cPartitionForMax.Size
+            $freeAllPlanForMax = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $cPartitionEndForMax `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
+            $bootOnlyPlanForMax = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $cPartitionEndForMax `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
+            $maxShrinkAllGB = [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - $bootPartSizeGB - $refindGB - 10))
+            $maxUseFreeBootGB = if ($bootOnlyPlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - 10)) } else { 0 }
+            $maxUseFreeAllGB = if ($freeAllPlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($freeAllPlanForMax.LinuxSpaceGB)) } else { 0 }
+            $dynamicMaxLinuxGB = [math]::Max($maxShrinkAllGB, [math]::Max($maxUseFreeBootGB, $maxUseFreeAllGB))
+        } else {
+            $partsForMax = @(Get-Partition -DiskNumber $selDiskNum -ErrorAction SilentlyContinue | Sort-Object Offset)
+            $anchorEndForMax = if ($partsForMax.Count -gt 0) {
+                $lastPart = $partsForMax | Select-Object -Last 1
+                $lastPart.Offset + $lastPart.Size
+            } else {
+                [int64](1MB)
+            }
+            $freePlanForMax = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $anchorEndForMax `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
+            $maxExistingFreeGB = if ($freePlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($freePlanForMax.LinuxSpaceGB)) } else { 0 }
+            $maxShrinkGB = 0
+            foreach ($part in $partsForMax) {
+                if ($part.DriveLetter) {
+                    try {
+                        $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
+                        if ($vol.FileSystem -eq "NTFS") {
+                            $candidateMax = [math]::Floor(($vol.SizeRemaining / 1GB) - $bootPartSizeGB - $refindGB - 5)
+                            if ($candidateMax -gt $maxShrinkGB) {
+                                $maxShrinkGB = $candidateMax
+                            }
+                        }
+                    } catch {}
+                }
+            }
+            $maxWipeGB = [math]::Floor($selDisk.TotalGB - $bootPartSizeGB - $refindGB)
+            $dynamicMaxLinuxGB = [math]::Max($maxExistingFreeGB, [math]::Max($maxShrinkGB, $maxWipeGB))
+        }
+
+        if ($dynamicMaxLinuxGB -lt $script:MinLinuxSizeGB) {
+            $dynamicMaxLinuxGB = $script:MinLinuxSizeGB
+        }
+        if ([decimal]$sizeNumeric.Maximum -ne [decimal]$dynamicMaxLinuxGB) {
+            $sizeNumeric.Maximum = [decimal]$dynamicMaxLinuxGB
+        }
+        if ($sizeNumeric.Value -gt $sizeNumeric.Maximum) {
+            $sizeNumeric.Value = $sizeNumeric.Maximum
+            return
+        }
+
+        $LinuxSizeGB = [int]$sizeNumeric.Value
+        $totalNeededGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
+
         if ($isTargetCDisk) {
             # ---- C: disk strategies ----
             $radioWipe.Visible = $false
@@ -535,9 +616,13 @@ function Show-DiskPlan {
             $cFreeGB = $script:CDriveInfo.FreeGB
             $cPartitionEnd = $cPartition.Offset + $cPartition.Size
             $usableFreeGB = Get-DiskUnallocatedGB -DiskNumber $selDiskNum -AfterOffset $cPartitionEnd
+            $freeAllPlan = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $cPartitionEnd `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB -UseRefind:$useRefind
+            $freeBootPlan = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $cPartitionEnd `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
 
-            $canFreeAll = ($usableFreeGB -ge ($totalNeededGB + 1))
-            $canFreeBoot = ($usableFreeGB -ge ($bootPartSizeGB + $refindGB + 1))
+            $canFreeAll = $freeAllPlan.HasRequestedLinuxSpace
+            $canFreeBoot = $freeBootPlan.HasBootSpace
 
             $refindNote = if ($useRefind) { " + rEFInd (0.1 GB)" } else { "" }
             $radioShrink.Text = "Shrink C: by $totalNeededGB GB for Linux ($LinuxSizeGB GB) + boot ($bootPartSizeGB GB)$refindNote"
@@ -545,7 +630,7 @@ function Show-DiskPlan {
             $radioShrink.Enabled = $true
 
             if ($canFreeAll) {
-                $radioFreeAll.Text = "Use existing unallocated space ($([math]::Round($usableFreeGB, 1)) GB available) - no shrink needed"
+                $radioFreeAll.Text = "Use existing unallocated space ($($freeAllPlan.LinuxSpaceGB) GB usable for Linux after boot partition) - no shrink needed"
                 $radioFreeAll.Visible = $true
                 $radioFreeAll.Enabled = $true
             } elseif ($canFreeBoot) {
@@ -615,7 +700,7 @@ function Show-DiskPlan {
                         $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
                     }
                     $step++
-                    $remainFreeGB = [math]::Round($usableFreeGB - $bootPartSizeGB - $refindGB, 1)
+                    $remainFreeGB = $freeAllPlan.LinuxSpaceGB
                     $changeLines += "  $step. Remaining ~$remainFreeGB GB stays unallocated for Linux"
                     $step++
                     if ($useRefind) {
@@ -634,8 +719,8 @@ function Show-DiskPlan {
                     $step = 1
                     $changeLines += "  $step. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$LinuxSizeGB GB)"
                     # Calculate actual remaining free space after boot partition is placed
-                    $existingFreeGB = Get-DiskUnallocatedGB -DiskNumber $script:CDriveInfo.DiskNumber -AfterOffset ($script:CDriveInfo.PartitionEndOffset)
-                    $remainAfterBootGB = [math]::Round($existingFreeGB - $bootPartSizeGB - $refindGB, 1)
+                    $existingFreeGB = $freeBootPlan.ChosenGapSizeGB
+                    $remainAfterBootGB = $freeBootPlan.LinuxSpaceGB
                     $step++
                     $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) in existing free space ($([math]::Round($existingFreeGB, 1)) GB available)"
                     if ($useRefind) {
@@ -674,7 +759,7 @@ function Show-DiskPlan {
                     if ($part.DriveLetter) {
                         try {
                             $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
-                            if ($vol.FileSystem -eq "NTFS" -and $vol.SizeRemaining -gt ($totalNeededGB * 1GB)) {
+                            if ($vol.FileSystem -eq "NTFS" -and $vol.SizeRemaining -ge (($totalNeededGB + 5) * 1GB)) {
                                 $shrinkablePartitions += [PSCustomObject]@{
                                     DriveLetter = $part.DriveLetter
                                     SizeGB = [math]::Round($part.Size / 1GB, 2)
@@ -688,7 +773,15 @@ function Show-DiskPlan {
             }
 
             $diskFreeGB = $selDisk.FreeGB
-            $hasFreeSpace = ($diskFreeGB -ge ($bootPartSizeGB + $refindGB + 1))
+            $anchorEnd = if ($partitions -and $partitions.Count -gt 0) {
+                $lastPart = $partitions | Select-Object -Last 1
+                $lastPart.Offset + $lastPart.Size
+            } else {
+                [int64](1MB)
+            }
+            $otherDrivePlan = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $anchorEnd `
+                -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $LinuxSizeGB -UseRefind:$useRefind
+            $hasFreeSpace = $otherDrivePlan.HasRequestedLinuxSpace
             $hasShrinkable = ($shrinkablePartitions.Count -gt 0)
 
             $nonNtfsPartitions = @()
@@ -711,7 +804,7 @@ function Show-DiskPlan {
 
             # Configure radio buttons for other-drive strategies
             if ($hasFreeSpace) {
-                $radioShrink.Text = "Use existing unallocated space ($([math]::Round($diskFreeGB, 1)) GB) on Disk $selDiskNum"
+                $radioShrink.Text = "Use existing unallocated space ($($otherDrivePlan.LinuxSpaceGB) GB usable for Linux after boot partition) on Disk $selDiskNum"
                 $radioShrink.Visible = $true
                 $radioShrink.Enabled = $true
                 if (-not $radioShrink.Checked -and -not $radioFreeAll.Checked -and -not $radioWipe.Checked) {
@@ -736,7 +829,7 @@ function Show-DiskPlan {
             }
 
             # Always offer wipe & reformat for non-C: disks if disk is large enough
-            $wipeMinGB = $bootPartSizeGB + $refindGB + 1
+            $wipeMinGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
             $diskSizeOK = ($selDisk.TotalGB -ge $wipeMinGB)
             $radioWipe.Text = [char]0x26A0 + " Wipe & reformat entire disk ($($selDisk.TotalGB) GB) - ALL DATA ON DISK $selDiskNum WILL BE DESTROYED"
             $radioWipe.Visible = $true
@@ -886,7 +979,7 @@ function Show-DiskPlan {
                         $changeLines += "  $step. Configure UEFI boot entry for $DistroName"
                     }
 
-                    $remainFreeGB = [math]::Round($diskFreeGB - $bootPartSizeGB - $refindGB, 1)
+                    $remainFreeGB = $otherDrivePlan.LinuxSpaceGB
                     if ($partitions) {
                         $afterLines = Format-AfterLayout -Partitions $partitions -DistroName $DistroName `
                             -BootPartSizeGB $bootPartSizeGB -ShowUnchanged -AppendLinuxAndBoot `
@@ -962,11 +1055,20 @@ function Show-DiskPlan {
         if (-not $selDisk.IsCDisk) {
             $strat = $script:DiskPlanStrategy
             if ($strat -eq "other_drive") {
-                $minFreeNeeded = $bootPartSizeGB + $refindGB + 1
-                if ($selDisk.FreeGB -lt $minFreeNeeded) {
+                $targetParts = @(Get-Partition -DiskNumber $selDisk.Number -ErrorAction SilentlyContinue | Sort-Object Offset)
+                $targetAnchorEnd = if ($targetParts.Count -gt 0) {
+                    $lastPart = $targetParts | Select-Object -Last 1
+                    $lastPart.Offset + $lastPart.Size
+                } else {
+                    [int64](1MB)
+                }
+                $targetPlan = Get-ContiguousInstallPlan -DiskNumber $selDisk.Number -AnchorEnd $targetAnchorEnd `
+                    -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB ([int]$sizeNumeric.Value) -UseRefind:$refindCheck.Checked
+                if (-not $targetPlan.HasRequestedLinuxSpace) {
                     [System.Windows.Forms.MessageBox]::Show(
-                        "Disk $($selDisk.Number) does not have enough unallocated space.`n`n" +
-                        "Need at least $minFreeNeeded GB of free space, but only $($selDisk.FreeGB) GB available.`n`n" +
+                        "Disk $($selDisk.Number) does not have a contiguous unallocated gap large enough for Linux + boot.`n`n" +
+                        "Requested Linux space: $([int]$sizeNumeric.Value) GB`n" +
+                        "Usable Linux space after boot placement: $($targetPlan.LinuxSpaceGB) GB`n`n" +
                         "Please select a different disk or choose to shrink a partition.",
                         "Insufficient Space on Target Disk",
                         [System.Windows.Forms.MessageBoxButtons]::OK,
@@ -1016,10 +1118,10 @@ function Show-DiskPlan {
                 if ($wipeConfirm -ne [System.Windows.Forms.DialogResult]::Yes) {
                     return
                 }
-            } elseif ($strat -eq "other_drive" -and -not ($selDisk.FreeGB -ge ($bootPartSizeGB + $refindGB + 1))) {
+            } elseif ($strat -eq "other_drive") {
                 [System.Windows.Forms.MessageBox]::Show(
                     "Disk $($selDisk.Number) cannot be used as-is.`n`n" +
-                    "It has no unallocated space and no NTFS partitions that can be shrunk.`n" +
+                    "It does not have a contiguous post-data gap large enough for Linux + boot.`n" +
                     "You may need to shrink or remove a partition manually first.",
                     "Cannot Use Target Disk",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
