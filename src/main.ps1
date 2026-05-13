@@ -371,4 +371,3 @@ Update-ISOStatus
 
 # Show form
 $form.ShowDialog() | Out-Null
-}
