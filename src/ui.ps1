@@ -450,7 +450,7 @@ function Show-DiskPlan {
 
     # ---- PLANNED CHANGES ----
     $changesGroup = New-Object System.Windows.Forms.GroupBox
-    $changesGroup.Text = "Planned Changes"
+    $changesGroup.Text = "Changes QuickLinux Will Make"
     $changesGroup.Font = $planBoldFont
     $changesGroup.Location = New-Object System.Drawing.Point(16, $yPos)
     $changesGroup.Size = New-Object System.Drawing.Size(670, 100)
@@ -468,7 +468,7 @@ function Show-DiskPlan {
 
     # ---- AFTER LAYOUT ----
     $afterGroup = New-Object System.Windows.Forms.GroupBox
-    $afterGroup.Text = "Disk Layout After Changes"
+    $afterGroup.Text = "Resulting Disk Layout"
     $afterGroup.Font = $planBoldFont
     $afterGroup.Location = New-Object System.Drawing.Point(16, $yPos)
     $afterGroup.Size = New-Object System.Drawing.Size(670, 130)
@@ -537,6 +537,7 @@ function Show-DiskPlan {
 
         $useRefind = $refindCheck.Checked
         $refindGB = if ($useRefind) { 0.1 } else { 0 }
+        $bootPlacementOverheadGB = (Get-BootPlacementOverheadBytes -UseRefind:$useRefind) / 1GB
         $script:DiskPlanTargetDisk = $selDiskNum
 
         # Update current layout text
@@ -560,8 +561,8 @@ function Show-DiskPlan {
                 -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
             $bootOnlyPlanForMax = Get-ContiguousInstallPlan -DiskNumber $selDiskNum -AnchorEnd $cPartitionEndForMax `
                 -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB 0 -UseRefind:$useRefind
-            $maxShrinkAllGB = [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - $bootPartSizeGB - $refindGB - 10))
-            $maxUseFreeBootGB = if ($bootOnlyPlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - 10)) } else { 0 }
+            $maxShrinkAllGB = [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - $bootPartSizeGB - $bootPlacementOverheadGB - 10))
+            $maxUseFreeBootGB = if ($bootOnlyPlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($script:CDriveInfo.FreeGB - 10 + $bootOnlyPlanForMax.LinuxSpaceGB)) } else { 0 }
             $maxUseFreeAllGB = if ($freeAllPlanForMax.HasBootSpace) { [math]::Max(0, [math]::Floor($freeAllPlanForMax.LinuxSpaceGB)) } else { 0 }
             $dynamicMaxLinuxGB = [math]::Max($maxShrinkAllGB, [math]::Max($maxUseFreeBootGB, $maxUseFreeAllGB))
         } else {
@@ -581,7 +582,7 @@ function Show-DiskPlan {
                     try {
                         $vol = Get-Volume -DriveLetter $part.DriveLetter -ErrorAction Stop
                         if ($vol.FileSystem -eq "NTFS") {
-                            $candidateMax = [math]::Floor(($vol.SizeRemaining / 1GB) - $bootPartSizeGB - $refindGB - 5)
+                            $candidateMax = [math]::Floor(($vol.SizeRemaining / 1GB) - $bootPartSizeGB - $bootPlacementOverheadGB - 5)
                             if ($candidateMax -gt $maxShrinkGB) {
                                 $maxShrinkGB = $candidateMax
                             }
@@ -605,7 +606,8 @@ function Show-DiskPlan {
         }
 
         $LinuxSizeGB = [int]$sizeNumeric.Value
-        $totalNeededGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
+        $shrinkAllAmountGB = Get-ShrinkAllAmountGB -LinuxSizeGB $LinuxSizeGB -BootPartSizeGB $bootPartSizeGB -UseRefind:$useRefind
+        $totalNeededGB = $shrinkAllAmountGB
 
         if ($isTargetCDisk) {
             # ---- C: disk strategies ----
@@ -623,18 +625,33 @@ function Show-DiskPlan {
 
             $canFreeAll = $freeAllPlan.HasRequestedLinuxSpace
             $canFreeBoot = $freeBootPlan.HasBootSpace
+            $freeBootExistingLinuxBytes = if ($canFreeBoot) { $freeBootPlan.LinuxSpaceBytes } else { [int64]0 }
+            $requestedLinuxBytes = [int64]($LinuxSizeGB * 1GB)
+            if ($requestedLinuxBytes -gt $freeBootExistingLinuxBytes) {
+                $freeBootShrinkBytes = $requestedLinuxBytes - $freeBootExistingLinuxBytes
+            } else {
+                $freeBootShrinkBytes = [int64]0
+            }
+            $freeBootExistingLinuxGB = [math]::Round($freeBootExistingLinuxBytes / 1GB, 2)
+            $freeBootShrinkAmountGB = $freeBootShrinkBytes / 1GB
 
-            $refindNote = if ($useRefind) { " + rEFInd (0.1 GB)" } else { "" }
-            $radioShrink.Text = "Shrink C: by $totalNeededGB GB for Linux ($LinuxSizeGB GB) + boot ($bootPartSizeGB GB)$refindNote"
+            $refindNote = if ($useRefind) { ", live boot ($bootPartSizeGB GB), and rEFInd" } else { " + live boot ($bootPartSizeGB GB)" }
+            $radioShrink.Text = "Shrink C: by $([math]::Round($totalNeededGB, 2)) GB to create Linux ($LinuxSizeGB GB)$refindNote"
             $radioShrink.Visible = $true
             $radioShrink.Enabled = $true
 
             if ($canFreeAll) {
-                $radioFreeAll.Text = "Use existing unallocated space ($($freeAllPlan.LinuxSpaceGB) GB usable for Linux after boot partition) - no shrink needed"
+                $radioFreeAll.Text = "Use existing unallocated space — no C: shrink needed"
                 $radioFreeAll.Visible = $true
                 $radioFreeAll.Enabled = $true
             } elseif ($canFreeBoot) {
-                $radioFreeAll.Text = "Use existing free space for $bootPartSizeGB GB boot partition, shrink C: by $LinuxSizeGB GB for Linux only"
+                if ($freeBootExistingLinuxGB -ge $LinuxSizeGB) {
+                    $radioFreeAll.Text = "Use existing unallocated space — no C: shrink needed"
+                } elseif ($freeBootExistingLinuxGB -gt 0) {
+                    $radioFreeAll.Text = "Use existing unallocated space, then shrink C: by $([math]::Round($freeBootShrinkAmountGB, 2)) GB to reach $LinuxSizeGB GB for Linux"
+                } else {
+                    $radioFreeAll.Text = "Place live boot partition in existing unallocated space, then shrink C: by $([math]::Round($freeBootShrinkAmountGB, 2)) GB for Linux"
+                }
                 $radioFreeAll.Visible = $true
                 $radioFreeAll.Enabled = $true
             } else {
@@ -651,6 +668,11 @@ function Show-DiskPlan {
                 elseif ($canFreeBoot) { $strategy = "use_free_boot" }
             }
             $script:DiskPlanStrategy = $strategy
+            switch ($strategy) {
+                "shrink_all" { $script:DiskPlanShrinkAmount = $totalNeededGB }
+                "use_free_boot" { $script:DiskPlanShrinkAmount = $freeBootShrinkAmountGB }
+                default { $script:DiskPlanShrinkAmount = 0 }
+            }
 
             $changeLines = @()
             $afterLines = @()
@@ -669,9 +691,9 @@ function Show-DiskPlan {
                 "shrink_all" {
                     $newCSizeGB = [math]::Round($cSizeGB - $totalNeededGB, 2)
                     $step = 1
-                    $changeLines += "  $step. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$totalNeededGB GB)"
+                    $changeLines += "  $step. Shrink C: by $([math]::Round($totalNeededGB, 2)) GB to create Linux ($LinuxSizeGB GB) + live boot ($bootPartSizeGB GB)"
                     $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) with $distroName files"
+                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType live boot partition (LINUX_LIVE) with $distroName files"
                     if ($useRefind) {
                         $step++
                         $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
@@ -694,7 +716,7 @@ function Show-DiskPlan {
                     $step = 1
                     $changeLines += "  $step. C: partition is NOT modified (stays at $cSizeGB GB)"
                     $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) in existing free space"
+                    $changeLines += "  $step. Use existing unallocated space for live boot and Linux"
                     if ($useRefind) {
                         $step++
                         $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
@@ -715,23 +737,26 @@ function Show-DiskPlan {
                         -BootPartFsType $bootPartFsType
                 }
                 "use_free_boot" {
-                    $newCSizeGB = [math]::Round($cSizeGB - $LinuxSizeGB, 2)
+                    $newCSizeGB = [math]::Round($cSizeGB - $freeBootShrinkAmountGB, 2)
                     $step = 1
-                    $changeLines += "  $step. Shrink C: partition from $cSizeGB GB to $newCSizeGB GB  (-$LinuxSizeGB GB)"
-                    # Calculate actual remaining free space after boot partition is placed
+                    $changeLines += "  $step. Place live boot partition in existing unallocated space"
+                    # Calculate actual existing free space used before any extra shrink
                     $existingFreeGB = $freeBootPlan.ChosenGapSizeGB
-                    $remainAfterBootGB = $freeBootPlan.LinuxSpaceGB
                     $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) in existing free space ($([math]::Round($existingFreeGB, 1)) GB available)"
+                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType live boot partition (LINUX_LIVE) in existing unallocated space ($([math]::Round($existingFreeGB, 1)) GB available)"
                     if ($useRefind) {
                         $step++
                         $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
                     }
                     $step++
-                    $changeLines += "  $step. Leave $LinuxSizeGB GB (from C: shrink) unallocated for Linux"
-                    if ($remainAfterBootGB -gt 0) {
+                    $changeLines += "  $step. Linux space target: $LinuxSizeGB GB"
+                    if ($freeBootExistingLinuxGB -gt 0) {
                         $step++
-                        $changeLines += "  $step. ~$remainAfterBootGB GB existing free space remains unallocated"
+                        $changeLines += "  $step. Use $freeBootExistingLinuxGB GB of existing unallocated space for Linux"
+                    }
+                    if ($freeBootShrinkAmountGB -gt 0) {
+                        $step++
+                        $changeLines += "  $step. Shrink C: by $([math]::Round($freeBootShrinkAmountGB, 2)) GB to complete the requested Linux space"
                     }
                     $step++
                     if ($useRefind) {
@@ -804,7 +829,7 @@ function Show-DiskPlan {
 
             # Configure radio buttons for other-drive strategies
             if ($hasFreeSpace) {
-                $radioShrink.Text = "Use existing unallocated space ($($otherDrivePlan.LinuxSpaceGB) GB usable for Linux after boot partition) on Disk $selDiskNum"
+                $radioShrink.Text = "Use existing unallocated space on Disk $selDiskNum — no partition shrink needed"
                 $radioShrink.Visible = $true
                 $radioShrink.Enabled = $true
                 if (-not $radioShrink.Checked -and -not $radioFreeAll.Checked -and -not $radioWipe.Checked) {
@@ -817,7 +842,7 @@ function Show-DiskPlan {
 
             if ($hasShrinkable) {
                 $bestShrink = $shrinkablePartitions | Sort-Object FreeGB -Descending | Select-Object -First 1
-                $radioFreeAll.Text = "Shrink $($bestShrink.DriveLetter): ($($bestShrink.SizeGB) GB, $($bestShrink.FreeGB) GB free) on Disk $selDiskNum to make space"
+                $radioFreeAll.Text = "Shrink $($bestShrink.DriveLetter): on Disk $selDiskNum by $([math]::Round($totalNeededGB, 2)) GB to create Linux ($LinuxSizeGB GB) + live boot ($bootPartSizeGB GB)"
                 $radioFreeAll.Visible = $true
                 $radioFreeAll.Enabled = $true
                 if (-not $hasFreeSpace -and -not $radioWipe.Checked) {
@@ -831,7 +856,7 @@ function Show-DiskPlan {
             # Always offer wipe & reformat for non-C: disks if disk is large enough
             $wipeMinGB = $LinuxSizeGB + $bootPartSizeGB + $refindGB
             $diskSizeOK = ($selDisk.TotalGB -ge $wipeMinGB)
-            $radioWipe.Text = [char]0x26A0 + " Wipe & reformat entire disk ($($selDisk.TotalGB) GB) - ALL DATA ON DISK $selDiskNum WILL BE DESTROYED"
+            $radioWipe.Text = [char]0x26A0 + " Erase Disk $selDiskNum and use it entirely for QuickLinux ($($selDisk.TotalGB) GB) - ALL DATA WILL BE DESTROYED"
             $radioWipe.Visible = $true
             $radioWipe.Enabled = $diskSizeOK
 
@@ -913,7 +938,7 @@ function Show-DiskPlan {
                 $step++
                 $changeLines += "  $step. Wipe Disk $selDiskNum and create a new GPT partition table"
                 $step++
-                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE)"
+                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType live boot partition (LINUX_LIVE)"
                 if ($useRefind) {
                     $step++
                     $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
@@ -938,9 +963,9 @@ function Show-DiskPlan {
                 $step = 1
                 $changeLines += "  $step. C: partition is NOT modified (different disk selected)"
                 $step++
-                $changeLines += "  $step. Shrink $($shrinkTarget.DriveLetter): from $($shrinkTarget.SizeGB) GB to $newPartSizeGB GB  (-$totalNeededGB GB)"
+                $changeLines += "  $step. Shrink $($shrinkTarget.DriveLetter): by $([math]::Round($totalNeededGB, 2)) GB on Disk $selDiskNum to create Linux ($LinuxSizeGB GB) + live boot ($bootPartSizeGB GB)"
                 $step++
-                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) on Disk $selDiskNum"
+                $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType live boot partition (LINUX_LIVE) on Disk $selDiskNum"
                 if ($useRefind) {
                     $step++
                     $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"
@@ -965,7 +990,7 @@ function Show-DiskPlan {
                     $step = 1
                     $changeLines += "  $step. C: partition is NOT modified (different disk selected)"
                     $step++
-                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType boot partition (LINUX_LIVE) on Disk $selDiskNum"
+                    $changeLines += "  $step. Create $bootPartSizeGB GB $bootPartFsType live boot partition (LINUX_LIVE) on Disk $selDiskNum"
                     if ($useRefind) {
                         $step++
                         $changeLines += "  $step. Create 100 MB FAT32 rEFInd partition"

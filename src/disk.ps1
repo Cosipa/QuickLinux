@@ -22,6 +22,31 @@ function Get-PartitionLabel {
         return "Partition            "
     }
 }
+function Get-BootPlacementReserveBytes {
+    param(
+        [switch]$UseRefind
+    )
+
+    $refindReserve = if ($UseRefind) { [int64]($script:RefindSizeMB * 1MB) } else { [int64]0 }
+    return [int64](16MB) + $refindReserve
+}
+function Get-BootPlacementOverheadBytes {
+    param(
+        [switch]$UseRefind
+    )
+
+    return (Get-BootPlacementReserveBytes -UseRefind:$UseRefind) + [int64](1MB)
+}
+function Get-ShrinkAllAmountGB {
+    param(
+        [Parameter(Mandatory)][int]$LinuxSizeGB,
+        [Parameter(Mandatory)][int]$BootPartSizeGB,
+        [switch]$UseRefind
+    )
+
+    $requiredBytes = [int64]($LinuxSizeGB * 1GB) + [int64]($BootPartSizeGB * 1GB) + (Get-BootPlacementOverheadBytes -UseRefind:$UseRefind)
+    return ($requiredBytes / 1GB)
+}
 function Get-ContiguousInstallPlan {
     param(
         [Parameter(Mandatory)][int]$DiskNumber,
@@ -62,9 +87,8 @@ function Get-ContiguousInstallPlan {
 
     $bootPartitionSize = [int64]($BootPartSizeGB * 1GB)
     $alignmentSize = [int64](1MB)
-    $refindReserve = if ($UseRefind) { [int64]($script:RefindSizeMB * 1MB) } else { [int64]0 }
-    $bufferSize = [int64](16MB) + $refindReserve
-    $minGapRequired = $bootPartitionSize + $bufferSize + $alignmentSize
+    $bufferSize = Get-BootPlacementReserveBytes -UseRefind:$UseRefind
+    $minGapRequired = $bootPartitionSize + (Get-BootPlacementOverheadBytes -UseRefind:$UseRefind)
     $usableGaps = @($gaps | Where-Object { $_.Size -ge $minGapRequired })
 
     $result = [PSCustomObject]@{
@@ -830,7 +854,7 @@ function Start-Installation {
     $bootPartSizeGB = if ($useExt4Boot) { $script:MinPartitionSizeGBExt4 } else { $script:MinPartitionSizeGB }
     $bootPartFsType = if ($useExt4Boot) { "ext4" } else { "FAT32" }
     $refindGB = if ($useRefind) { 0.1 } else { 0 }
-    $totalNeededGB = $linuxSizeGB + $bootPartSizeGB + $refindGB
+    $totalNeededGB = Get-ShrinkAllAmountGB -LinuxSizeGB $linuxSizeGB -BootPartSizeGB $bootPartSizeGB -UseRefind:$useRefind
     $refindNote = if ($useRefind) { ", rEFInd: yes" } else { "" }
     $ext4Note = if ($useExt4Boot) { ", ext4 boot: yes" } else { "" }
     $script:WslMountInfo = $null  # track WSL mount for cleanup
@@ -996,16 +1020,16 @@ function Start-Installation {
 
         # Check space (only if we're shrinking C:)
         if ($selectedStrategy -eq "shrink_all") {
-            if ($script:CDriveInfo.FreeGB -lt ($totalNeededGB + 10)) {
+            if ($script:CDriveInfo.FreeGB -lt ([math]::Round($totalNeededGB, 2) + 10)) {
                 Log-Message "Error: Not enough free space on C: to shrink!" -Error
-                Log-Message "Need: $($totalNeededGB + 10) GB free on C:" -Error
+                Log-Message "Need: $([math]::Round($totalNeededGB, 2) + 10) GB free on C:" -Error
                 Log-Message "Have: $($script:CDriveInfo.FreeGB) GB" -Error
                 return
             }
         } elseif ($selectedStrategy -eq "use_free_boot") {
-            if ($script:CDriveInfo.FreeGB -lt ($linuxSizeGB + 10)) {
+            if ($script:CDriveInfo.FreeGB -lt ([math]::Round($otherDriveShrinkAmountGB, 2) + 10)) {
                 Log-Message "Error: Not enough free space on C: to shrink!" -Error
-                Log-Message "Need: $($linuxSizeGB + 10) GB free on C:" -Error
+                Log-Message "Need: $([math]::Round($otherDriveShrinkAmountGB, 2) + 10) GB free on C:" -Error
                 Log-Message "Have: $($script:CDriveInfo.FreeGB) GB" -Error
                 return
             }
@@ -1326,7 +1350,7 @@ exit
                 return
             }
 
-            $shrinkAmountGB = if ($selectedStrategy -eq "use_free_boot") { $linuxSizeGB } else { $totalNeededGB }
+            $shrinkAmountGB = if ($selectedStrategy -eq "use_free_all") { 0 } elseif ($selectedStrategy -eq "other_drive_shrink") { $otherDriveShrinkAmountGB } elseif ($otherDriveShrinkAmountGB -gt 0) { $otherDriveShrinkAmountGB } else { $totalNeededGB }
 
             Set-Status "Shrinking C: partition..."
             Log-Message "Shrinking C: partition by $shrinkAmountGB GB..."
@@ -1377,7 +1401,7 @@ exit
                 }
             }
 
-            $requiredLinuxInGapGB = if ($selectedStrategy -eq "use_free_boot") { 0 } else { $linuxSizeGB }
+            $requiredLinuxInGapGB = $linuxSizeGB
             $plan = Get-ContiguousInstallPlan -DiskNumber $targetDiskNumber -AnchorEnd $anchorEnd `
                 -BootPartSizeGB $bootPartSizeGB -LinuxSizeGB $requiredLinuxInGapGB -UseRefind:$useRefind
 

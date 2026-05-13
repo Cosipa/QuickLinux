@@ -4,11 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.0.2-beta] - 2026-05-13
+## [0.0.2-beta1] - 2026-05-13
 
 ### Fixed
 
 - Corrected Linux install space planning to use contiguous post-boot free space, improved per-disk sizing limits, and tightened ISO download free-space checks
+- Fixed minimum-size Linux partition planning by accounting for boot-placement overhead and shrinking only the missing Linux space when reusable unallocated space already exists
+- Improved disk-plan wording so all strategies read more clearly and consistently, including clearer live boot wording and mixed free-space plus shrink explanations
 - Removed stray brace from compiled Windows script that broke `irm "https://cosipa.dev/quicklinux" | iex`
 
 ## [0.0.1-beta] - 2026-04-26
